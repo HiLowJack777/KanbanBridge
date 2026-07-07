@@ -40,6 +40,8 @@ Traditional boards are good at organizing work for people. Coding agents are goo
 
 ## Quick Start
 
+If you use Codex, Claude Code, Cursor, or another coding agent, you can likely download the repo and ask the agent to set up and run KanbanBridge for you. The manual commands are included below for anyone who wants to run the setup directly.
+
 Install dependencies:
 
 ```powershell
