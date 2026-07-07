@@ -550,6 +550,20 @@ button:focus-visible {
   font-weight: 700;
 }
 
+.observation-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 2px 7px;
+  border: 1px solid rgba(37, 99, 235, 0.28);
+  border-radius: 999px;
+  background: #eef2ff;
+  color: #1e3a8a;
+  font-size: 11px;
+  font-weight: 800;
+}
+
 .tag-chip span,
 .tag-toggle span {
   width: 8px;
@@ -926,6 +940,198 @@ button:focus-visible {
   width: min(720px, calc(100vw - 64px));
 }
 
+.planning-panel {
+  width: min(980px, calc(100vw - 64px));
+}
+
+.design-assets-panel {
+  width: min(1040px, calc(100vw - 64px));
+}
+
+.planning-layout {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  min-height: 520px;
+}
+
+.planning-list {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  padding: 14px;
+  border-right: 1px solid var(--border);
+}
+
+.planning-create {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px;
+  gap: 7px;
+}
+
+.planning-create input {
+  min-width: 0;
+  padding: 9px 10px;
+}
+
+.planning-create button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.planning-doc-list {
+  display: grid;
+  gap: 7px;
+}
+
+.planning-doc {
+  display: grid;
+  gap: 4px;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  color: #17202a;
+  text-align: left;
+}
+
+.planning-doc.active {
+  border-color: rgba(15, 118, 110, 0.35);
+  background: #eaf7f5;
+}
+
+.planning-doc strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.planning-doc time {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.planning-editor {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  min-width: 0;
+  padding: 14px;
+}
+
+.planning-editor-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 30px;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.planning-editor-header input {
+  min-width: 0;
+  border-color: transparent;
+  padding: 5px 0;
+  font-size: 18px;
+  font-weight: 850;
+}
+
+.planning-editor-header input:focus {
+  border-color: var(--border);
+  padding: 5px 8px;
+}
+
+.planning-editor textarea {
+  width: 100%;
+  min-height: 420px;
+  padding: 12px;
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.planning-empty {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 10px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.design-assets-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  padding: 14px 14px 0;
+}
+
+.asset-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 14px;
+  padding: 14px;
+  max-height: min(680px, calc(100vh - 210px));
+  overflow: auto;
+}
+
+.asset-item {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: var(--shadow);
+}
+
+.asset-preview {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 4 / 3;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #f6f7f8;
+  overflow: hidden;
+}
+
+.asset-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.asset-fields {
+  display: grid;
+  gap: 7px;
+}
+
+.asset-fields input,
+.asset-fields select {
+  min-width: 0;
+  padding: 8px 9px;
+}
+
+.asset-fields input {
+  font-weight: 800;
+}
+
+.asset-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.design-assets-empty {
+  min-height: 360px;
+  padding: 24px;
+}
+
 .settings-panel h3 {
   margin: 0;
 }
@@ -963,6 +1169,29 @@ button:focus-visible {
 .observation-list {
   display: grid;
   gap: 9px;
+}
+
+.observation-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.filter-chip {
+  min-height: 28px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: #fff;
+  color: #344054;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.filter-chip.active {
+  border-color: rgba(15, 118, 110, 0.4);
+  background: #eaf7f5;
+  color: #0f766e;
 }
 
 .observation-item {
@@ -1013,6 +1242,21 @@ button:focus-visible {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.observation-meta .status-pill.active {
+  background: #eaf7f5;
+  color: #0f766e;
+}
+
+.observation-meta .status-pill.converted {
+  background: #eef2ff;
+  color: #3730a3;
+}
+
+.observation-meta .status-pill.resolved {
+  background: #ecfdf3;
+  color: #027a48;
 }
 
 .observation-item time {

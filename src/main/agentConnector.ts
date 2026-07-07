@@ -80,7 +80,11 @@ export function startAgentConnector(getService: ServiceGetter, notifyChange: Cha
 
       if (request.method === "POST" && url.pathname === "/observations") {
         const input = await readJson<CreateObservationInput>(request);
-        const observation = await (await getService()).createObservation(input);
+        const observation = await (await getService()).createObservation({
+          ...input,
+          projectId: input.projectId ?? url.searchParams.get("projectId") ?? undefined,
+          workspaceId: input.workspaceId ?? url.searchParams.get("workspaceId") ?? undefined
+        });
         notifyChange();
         sendJson(response, 201, { observation });
         return;

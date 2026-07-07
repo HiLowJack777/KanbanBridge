@@ -4,11 +4,14 @@ import type {
   CreateColumnInput,
   CreateObservationInput,
   CreateProjectInput,
+  CreateProjectDocumentInput,
   CreateTagInput,
   ProjectBoardApi,
   UpdateCardInput,
   UpdateChecklistItemInput,
   UpdateColumnInput,
+  UpdateDesignAssetInput,
+  UpdateProjectDocumentInput,
   UpdateProjectInput
 } from "./shared/types";
 
@@ -43,6 +46,15 @@ const api: ProjectBoardApi = {
     ipcRenderer.invoke("tag:create", projectId, input),
   applyTag: (cardId: string, tagId: string) => ipcRenderer.invoke("tag:apply", cardId, tagId),
   removeTag: (cardId: string, tagId: string) => ipcRenderer.invoke("tag:remove", cardId, tagId),
+  createProjectDocument: (projectId: string, input: CreateProjectDocumentInput) =>
+    ipcRenderer.invoke("document:create", projectId, input),
+  updateProjectDocument: (documentId: string, patch: UpdateProjectDocumentInput) =>
+    ipcRenderer.invoke("document:update", documentId, patch),
+  archiveProjectDocument: (documentId: string) => ipcRenderer.invoke("document:archive", documentId),
+  importDesignAsset: (projectId: string) => ipcRenderer.invoke("designAsset:import", projectId),
+  updateDesignAsset: (assetId: string, patch: UpdateDesignAssetInput) =>
+    ipcRenderer.invoke("designAsset:update", assetId, patch),
+  archiveDesignAsset: (assetId: string) => ipcRenderer.invoke("designAsset:archive", assetId),
   linkObservationToCard: (cardId: string, observationId: string) =>
     ipcRenderer.invoke("observation:linkCard", cardId, observationId),
   unlinkObservationFromCard: (cardId: string, observationId: string) =>

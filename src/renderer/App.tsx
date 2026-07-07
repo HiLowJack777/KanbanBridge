@@ -26,8 +26,10 @@ import {
   Circle,
   Copy,
   DatabaseBackup,
+  FileText,
   FolderOpen,
   GripVertical,
+  Image as ImageIcon,
   Link2,
   MessageSquare,
   Plus,
@@ -44,9 +46,12 @@ import type {
   Card,
   CreateCardInput,
   CreateProjectInput,
+  DesignAsset,
   Observation,
+  ObservationStatus,
   Priority,
   Project,
+  ProjectDocument,
   Tag,
   TemplateId
 } from "../shared/types";
@@ -55,6 +60,7 @@ const PRIORITIES: Priority[] = ["", "Low", "Medium", "High", "Urgent"];
 const TAG_COLORS = ["#0f766e", "#2563eb", "#b45309", "#be123c", "#64748b"];
 
 type DueFilter = "all" | "overdue" | "today" | "week" | "none";
+type ObservationFilter = ObservationStatus | "all";
 
 function App() {
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null);
@@ -67,6 +73,8 @@ function App() {
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showObservations, setShowObservations] = useState(false);
+  const [showPlanning, setShowPlanning] = useState(false);
+  const [showDesignAssets, setShowDesignAssets] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [newCardColumnId, setNewCardColumnId] = useState<string | null>(null);
   const [newCardObservation, setNewCardObservation] = useState<Observation | null>(null);
@@ -203,6 +211,8 @@ function App() {
               setNotice(`Backup created: ${result.path}`);
             })
           }
+          onOpenPlanning={() => setShowPlanning(true)}
+          onOpenDesignAssets={() => setShowDesignAssets(true)}
           onOpenObservations={() => setShowObservations(true)}
           onOpenSettings={() => setShowSettings(true)}
         />
@@ -331,7 +341,13 @@ function App() {
             onClose={() => setShowObservations(false)}
             onCreateObservation={(body) =>
               runMutation(
-                () => window.projectBoard.createObservation({ body, source: "Project Board" }),
+                () =>
+                  window.projectBoard.createObservation({
+                    body,
+                    source: "Project Board",
+                    workspaceId: snapshot.workspace.id,
+                    projectId: board.project.id
+                  }),
                 "Observation added"
               )
             }
@@ -346,6 +362,59 @@ function App() {
                 openNewCard(defaultNewCardColumnId, observation);
               }
             }}
+          />
+        </ModalDialog>
+      ) : null}
+
+      {showPlanning ? (
+        <ModalDialog ariaLabel="Planning documents" onClose={() => setShowPlanning(false)}>
+          <PlanningPanel
+            documents={board.documents}
+            onClose={() => setShowPlanning(false)}
+            onCreateDocument={(input) =>
+              runMutation(
+                () => window.projectBoard.createProjectDocument(board.project.id, input),
+                "Planning document created"
+              )
+            }
+            onUpdateDocument={(documentId, patch) =>
+              runMutation(() => window.projectBoard.updateProjectDocument(documentId, patch))
+            }
+            onArchiveDocument={(documentId) =>
+              runMutation(
+                () => window.projectBoard.archiveProjectDocument(documentId),
+                "Planning document archived"
+              )
+            }
+          />
+        </ModalDialog>
+      ) : null}
+
+      {showDesignAssets ? (
+        <ModalDialog ariaLabel="Design assets" onClose={() => setShowDesignAssets(false)}>
+          <DesignAssetsPanel
+            assets={board.designAssets}
+            cards={allCards}
+            documents={board.documents}
+            onClose={() => setShowDesignAssets(false)}
+            onImportAsset={() =>
+              runMutation(async () => {
+                const asset = await window.projectBoard.importDesignAsset(board.project.id);
+                if (asset) {
+                  setNotice(`Design asset imported: ${asset.displayName}`);
+                  window.setTimeout(() => setNotice(null), 3500);
+                }
+              })
+            }
+            onUpdateAsset={(assetId, patch) =>
+              runMutation(() => window.projectBoard.updateDesignAsset(assetId, patch))
+            }
+            onArchiveAsset={(assetId) =>
+              runMutation(
+                () => window.projectBoard.archiveDesignAsset(assetId),
+                "Design asset archived"
+              )
+            }
           />
         </ModalDialog>
       ) : null}
@@ -575,6 +644,8 @@ function TopBar({
   onTagChange,
   onDueChange,
   onBackup,
+  onOpenPlanning,
+  onOpenDesignAssets,
   onOpenObservations,
   onOpenSettings
 }: {
@@ -590,9 +661,13 @@ function TopBar({
   onTagChange: (tagId: string) => void;
   onDueChange: (filter: DueFilter) => void;
   onBackup: () => void;
+  onOpenPlanning: () => void;
+  onOpenDesignAssets: () => void;
   onOpenObservations: () => void;
   onOpenSettings: () => void;
 }) {
+  const visibleTags = tags.filter((tag) => !isCodeObservationTag(tag.name));
+
   return (
     <header className="topbar">
       <div className="title-stack">
@@ -620,7 +695,7 @@ function TopBar({
 
         <select value={tagFilter} onChange={(event) => onTagChange(event.target.value)}>
           <option value="all">All tags</option>
-          {tags.map((tag) => (
+          {visibleTags.map((tag) => (
             <option key={tag.id} value={tag.id}>
               {tag.name}
             </option>
@@ -638,6 +713,14 @@ function TopBar({
         <button type="button" className="secondary-button" onClick={onOpenObservations}>
           <MessageSquare size={16} />
           Observations
+        </button>
+        <button type="button" className="secondary-button" onClick={onOpenPlanning}>
+          <FileText size={16} />
+          Planning
+        </button>
+        <button type="button" className="secondary-button" onClick={onOpenDesignAssets}>
+          <ImageIcon size={16} />
+          Design
         </button>
         <button type="button" className="secondary-button" onClick={onBackup}>
           <DatabaseBackup size={16} />
@@ -992,13 +1075,20 @@ function CardDragOverlay({ card }: { card: Card }) {
 
 function CardTileBody({ card }: { card: Card }) {
   const checklistDone = card.checklist.filter((item) => item.isComplete).length;
+  const visibleTags = card.tags.filter((tag) => !isCodeObservationTag(tag.name));
 
   return (
     <div className="card-body">
       <h3>{card.title}</h3>
-      {card.tags.length ? (
+      {visibleTags.length || card.observations.length ? (
         <div className="tag-row">
-          {card.tags.map((tag) => (
+          {card.observations.map((observation) => (
+            <span key={observation.id} className="observation-chip">
+              <Link2 size={12} />
+              {observation.label}
+            </span>
+          ))}
+          {visibleTags.map((tag) => (
             <span key={tag.id} className="tag-chip" style={{ borderColor: tag.color }}>
               <span style={{ background: tag.color }} />
               {tag.name}
@@ -1120,7 +1210,7 @@ function NewCardPanel({
           <section className="detail-section linked-source">
             <div className="section-heading">
               <h3>Source observation</h3>
-              <span>{sourceObservation.id.slice(0, 8)}</span>
+              <span>{sourceObservation.label}</span>
             </div>
             <p>{sourceObservation.body}</p>
           </section>
@@ -1407,7 +1497,7 @@ function DetailPanel({
               <article key={observation.id} className="linked-observation">
                 <p>{observation.body}</p>
                 <footer>
-                  <span>{observation.id.slice(0, 8)}</span>
+                  <span>{observation.label}</span>
                   <button
                     type="button"
                     className="icon-button quiet"
@@ -1433,7 +1523,7 @@ function DetailPanel({
               <option value="">Link observation...</option>
               {availableObservations.map((observation) => (
                 <option key={observation.id} value={observation.id}>
-                  {observationTitle(observation.body)}
+                  {observation.label}
                 </option>
               ))}
             </select>
@@ -1562,6 +1652,259 @@ function SettingsPanel({
   );
 }
 
+function PlanningPanel({
+  documents,
+  onClose,
+  onCreateDocument,
+  onUpdateDocument,
+  onArchiveDocument
+}: {
+  documents: ProjectDocument[];
+  onClose: () => void;
+  onCreateDocument: (input: { title: string; body?: string }) => void;
+  onUpdateDocument: (documentId: string, patch: { title?: string; body?: string }) => void;
+  onArchiveDocument: (documentId: string) => void;
+}) {
+  const [selectedId, setSelectedId] = useState<string | null>(documents[0]?.id ?? null);
+  const [newTitle, setNewTitle] = useState("");
+  const selected = documents.find((document) => document.id === selectedId) ?? documents[0] ?? null;
+  const [title, setTitle] = useState(selected?.title ?? "");
+  const [body, setBody] = useState(selected?.body ?? "");
+
+  useEffect(() => {
+    if (selectedId && !documents.some((document) => document.id === selectedId)) {
+      setSelectedId(documents[0]?.id ?? null);
+    }
+  }, [documents, selectedId]);
+
+  useEffect(() => {
+    setTitle(selected?.title ?? "");
+    setBody(selected?.body ?? "");
+  }, [selected?.id, selected?.updatedAt]);
+
+  function createDocument(event: FormEvent) {
+    event.preventDefault();
+    if (!newTitle.trim()) {
+      return;
+    }
+    onCreateDocument({ title: newTitle, body: "" });
+    setNewTitle("");
+  }
+
+  function saveTitle() {
+    if (selected && title.trim() && title.trim() !== selected.title) {
+      onUpdateDocument(selected.id, { title });
+    } else if (selected) {
+      setTitle(selected.title);
+    }
+  }
+
+  function saveBody() {
+    if (selected && body !== selected.body) {
+      onUpdateDocument(selected.id, { body });
+    }
+  }
+
+  return (
+    <aside className="detail-panel planning-panel">
+      <header className="detail-header">
+        <div>
+          <p className="eyebrow">Project planning</p>
+          <h2>Documents</h2>
+        </div>
+        <button type="button" className="icon-button" onClick={onClose} aria-label="Close planning">
+          <X size={18} />
+        </button>
+      </header>
+
+      <div className="planning-layout">
+        <section className="planning-list">
+          <form className="planning-create" onSubmit={createDocument}>
+            <input
+              value={newTitle}
+              onChange={(event) => setNewTitle(event.target.value)}
+              placeholder="New document title"
+            />
+            <button type="submit" aria-label="Create planning document">
+              <Plus size={16} />
+            </button>
+          </form>
+
+          {documents.length ? (
+            <div className="planning-doc-list">
+              {documents.map((document) => (
+                <button
+                  type="button"
+                  key={document.id}
+                  className={document.id === selected?.id ? "planning-doc active" : "planning-doc"}
+                  onClick={() => setSelectedId(document.id)}
+                >
+                  <strong>{document.title}</strong>
+                  <time>{formatDateTime(document.updatedAt)}</time>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="empty-note">No planning documents yet.</p>
+          )}
+        </section>
+
+        <section className="planning-editor">
+          {selected ? (
+            <>
+              <div className="planning-editor-header">
+                <input
+                  value={title}
+                  onChange={(event) => setTitle(event.target.value)}
+                  onBlur={saveTitle}
+                  aria-label="Document title"
+                />
+                <button
+                  type="button"
+                  className="icon-button quiet"
+                  onClick={() => onArchiveDocument(selected.id)}
+                  aria-label="Archive planning document"
+                  title="Archive document"
+                >
+                  <Archive size={15} />
+                </button>
+              </div>
+              <textarea
+                value={body}
+                onChange={(event) => setBody(event.target.value)}
+                onBlur={saveBody}
+                rows={18}
+                placeholder="Write project brief, specs, implementation notes, decisions, or references..."
+              />
+            </>
+          ) : (
+            <div className="planning-empty">
+              <FileText size={28} />
+              <p>Create a planning document to start capturing project context.</p>
+            </div>
+          )}
+        </section>
+      </div>
+    </aside>
+  );
+}
+
+function DesignAssetsPanel({
+  assets,
+  cards,
+  documents,
+  onClose,
+  onImportAsset,
+  onUpdateAsset,
+  onArchiveAsset
+}: {
+  assets: DesignAsset[];
+  cards: Card[];
+  documents: ProjectDocument[];
+  onClose: () => void;
+  onImportAsset: () => void;
+  onUpdateAsset: (
+    assetId: string,
+    patch: { displayName?: string; cardId?: string | null; documentId?: string | null }
+  ) => void;
+  onArchiveAsset: (assetId: string) => void;
+}) {
+  function saveName(asset: DesignAsset, value: string) {
+    const nextName = value.trim();
+    if (!nextName || nextName === asset.displayName) {
+      return;
+    }
+    onUpdateAsset(asset.id, { displayName: nextName });
+  }
+
+  return (
+    <aside className="detail-panel design-assets-panel">
+      <header className="detail-header">
+        <div>
+          <p className="eyebrow">Project design</p>
+          <h2>Assets</h2>
+        </div>
+        <button type="button" className="icon-button" onClick={onClose} aria-label="Close design assets">
+          <X size={18} />
+        </button>
+      </header>
+
+      <section className="design-assets-toolbar">
+        <button type="button" className="secondary-button" onClick={onImportAsset}>
+          <Plus size={16} />
+          Add image
+        </button>
+      </section>
+
+      {assets.length ? (
+        <div className="asset-grid">
+          {assets.map((asset) => (
+            <article key={asset.id} className="asset-item">
+              <div className="asset-preview">
+                <img src={asset.fileUrl} alt={asset.displayName} />
+              </div>
+              <div className="asset-fields">
+                <input
+                  defaultValue={asset.displayName}
+                  onBlur={(event) => {
+                    if (!event.currentTarget.value.trim()) {
+                      event.currentTarget.value = asset.displayName;
+                      return;
+                    }
+                    saveName(asset, event.currentTarget.value);
+                  }}
+                  aria-label="Asset name"
+                />
+                <select
+                  value={asset.cardId ?? ""}
+                  onChange={(event) => onUpdateAsset(asset.id, { cardId: event.target.value || null })}
+                  aria-label="Linked card"
+                >
+                  <option value="">No card link</option>
+                  {cards.map((card) => (
+                    <option key={card.id} value={card.id}>
+                      {card.title}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={asset.documentId ?? ""}
+                  onChange={(event) => onUpdateAsset(asset.id, { documentId: event.target.value || null })}
+                  aria-label="Linked planning document"
+                >
+                  <option value="">No document link</option>
+                  {documents.map((document) => (
+                    <option key={document.id} value={document.id}>
+                      {document.title}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <footer className="asset-footer">
+                <span>{formatDateTime(asset.createdAt)}</span>
+                <button
+                  type="button"
+                  className="icon-button quiet"
+                  onClick={() => onArchiveAsset(asset.id)}
+                  aria-label={`Archive ${asset.displayName}`}
+                  title="Archive asset"
+                >
+                  <Archive size={15} />
+                </button>
+              </footer>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <div className="planning-empty design-assets-empty">
+          <ImageIcon size={30} />
+          <p>Add screenshots, mockups, or UI references for this project.</p>
+        </div>
+      )}
+    </aside>
+  );
+}
+
 function ObservationsPanel({
   observations,
   onClose,
@@ -1576,6 +1919,16 @@ function ObservationsPanel({
   onCreateCardFromObservation: (observation: Observation) => void;
 }) {
   const [body, setBody] = useState("");
+  const [filter, setFilter] = useState<ObservationFilter>("active");
+  const filteredObservations = observations.filter((observation) =>
+    filter === "all" ? true : observation.status === filter
+  );
+  const counts = {
+    all: observations.length,
+    active: observations.filter((observation) => observation.status === "active").length,
+    converted: observations.filter((observation) => observation.status === "converted").length,
+    resolved: observations.filter((observation) => observation.status === "resolved").length
+  };
 
   function submit(event: FormEvent) {
     event.preventDefault();
@@ -1618,14 +1971,27 @@ function ObservationsPanel({
       <section className="detail-section">
         <div className="section-heading">
           <h3>Captured</h3>
-          <span>{observations.length}</span>
+          <span>{filteredObservations.length}/{observations.length}</span>
         </div>
-        {observations.length ? (
+        <div className="observation-filter">
+          {(["active", "converted", "resolved", "all"] as ObservationFilter[]).map((item) => (
+            <button
+              type="button"
+              key={item}
+              className={filter === item ? "filter-chip active" : "filter-chip"}
+              onClick={() => setFilter(item)}
+            >
+              {observationFilterLabel(item)} {counts[item]}
+            </button>
+          ))}
+        </div>
+        {filteredObservations.length ? (
           <div className="observation-list">
-            {observations.map((observation) => (
+            {filteredObservations.map((observation) => (
               <article key={observation.id} className="observation-item">
                 <p>{observation.body}</p>
                 <div className="observation-meta">
+                  <span className={`status-pill ${observation.status}`}>{observation.status}</span>
                   <span>{observation.source || "Project Board"}</span>
                   {observation.projectPath ? <span>{observation.projectPath}</span> : null}
                   <span>{observation.kind || "observation"}</span>
@@ -1655,7 +2021,7 @@ function ObservationsPanel({
             ))}
           </div>
         ) : (
-          <p className="empty-note">No observations yet.</p>
+          <p className="empty-note">No {filter === "all" ? "" : `${filter} `}observations.</p>
         )}
       </section>
     </aside>
@@ -1804,6 +2170,23 @@ function observationTitle(body: string): string {
     return cleaned || "Observation";
   }
   return `${cleaned.slice(0, 69)}...`;
+}
+
+function observationFilterLabel(filter: ObservationFilter): string {
+  switch (filter) {
+    case "all":
+      return "All";
+    case "active":
+      return "Active";
+    case "converted":
+      return "Converted";
+    case "resolved":
+      return "Resolved";
+  }
+}
+
+function isCodeObservationTag(name: string): boolean {
+  return /^Obs: [0-9a-f]{8}$/i.test(name.trim());
 }
 
 function formatDateTime(value: string): string {

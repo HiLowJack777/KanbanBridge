@@ -7,10 +7,13 @@ import type {
   CreateColumnInput,
   CreateObservationInput,
   CreateProjectInput,
+  CreateProjectDocumentInput,
   CreateTagInput,
   UpdateCardInput,
   UpdateChecklistItemInput,
   UpdateColumnInput,
+  UpdateDesignAssetInput,
+  UpdateProjectDocumentInput,
   UpdateProjectInput
 } from "../shared/types";
 import { startAgentConnector } from "./agentConnector";
@@ -101,6 +104,30 @@ function registerIpc(): void {
 
   ipcMain.handle("tag:remove", async (_event, cardId: string, tagId: string) => {
     return (await getService()).removeTag(cardId, tagId);
+  });
+
+  ipcMain.handle("document:create", async (_event, projectId: string, input: CreateProjectDocumentInput) => {
+    return (await getService()).createProjectDocument(projectId, input);
+  });
+
+  ipcMain.handle("document:update", async (_event, documentId: string, patch: UpdateProjectDocumentInput) => {
+    return (await getService()).updateProjectDocument(documentId, patch);
+  });
+
+  ipcMain.handle("document:archive", async (_event, documentId: string) => {
+    return (await getService()).archiveProjectDocument(documentId);
+  });
+
+  ipcMain.handle("designAsset:import", async (_event, projectId: string) => {
+    return (await getService()).importDesignAsset(projectId);
+  });
+
+  ipcMain.handle("designAsset:update", async (_event, assetId: string, patch: UpdateDesignAssetInput) => {
+    return (await getService()).updateDesignAsset(assetId, patch);
+  });
+
+  ipcMain.handle("designAsset:archive", async (_event, assetId: string) => {
+    return (await getService()).archiveDesignAsset(assetId);
   });
 
   ipcMain.handle("observation:linkCard", async (_event, cardId: string, observationId: string) => {

@@ -1,6 +1,8 @@
-import { shell } from "electron";
+import { dialog, shell } from "electron";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
 import type {
   ActivityEvent,
   AppSnapshot,
@@ -16,15 +18,20 @@ import type {
   CreateColumnInput,
   CreateObservationInput,
   CreateProjectInput,
+  CreateProjectDocumentInput,
   CreateTagInput,
+  DesignAsset,
   Observation,
   Priority,
   Project,
+  ProjectDocument,
   Tag,
   TemplateId,
   UpdateCardInput,
   UpdateChecklistItemInput,
   UpdateColumnInput,
+  UpdateDesignAssetInput,
+  UpdateProjectDocumentInput,
   UpdateProjectInput,
   Workspace
 } from "../shared/types";
@@ -126,7 +133,10 @@ export class ProjectBoardService {
       dataLocation: this.database.dataPath,
       backupLocation: this.database.backupDir,
       templates: BOARD_TEMPLATES,
-      observations: this.listObservations()
+      observations: this.listObservations({
+        projectId: activeProjectId,
+        workspaceId: workspace.id
+      })
     };
   }
 
@@ -139,14 +149,18 @@ export class ProjectBoardService {
 
       const id = randomUUID();
       const timestamp = now();
+      const scope = this.resolveObservationScope(input);
       this.database.run(
         `
           INSERT INTO observations (
-            id, body, source, project_path, kind, archived_at, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?)
+            id, workspace_id, project_id, body, source, project_path, kind,
+            archived_at, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
         `,
         [
           id,
+          scope.workspaceId,
+          scope.projectId,
           cleaned,
           input.source?.trim() || "Project Board",
           input.projectPath?.trim() || "",
@@ -467,6 +481,195 @@ export class ProjectBoardService {
     });
   }
 
+  async createProjectDocument(
+    projectId: string,
+    input: CreateProjectDocumentInput
+  ): Promise<ProjectDocument> {
+    return this.database.write(() => {
+      this.requireProject(projectId);
+      const id = randomUUID();
+      const timestamp = now();
+      this.database.run(
+        `
+          INSERT INTO project_documents (
+            id, project_id, title, body, archived_at, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, NULL, ?, ?)
+        `,
+        [
+          id,
+          projectId,
+          cleanTitle(input.title, "Document title"),
+          input.body ?? "",
+          timestamp,
+          timestamp
+        ]
+      );
+      this.recordActivity(projectId, null, "document.created", `Planning document "${input.title}" created`);
+      return this.requireProjectDocument(id);
+    });
+  }
+
+  async updateProjectDocument(
+    documentId: string,
+    patch: UpdateProjectDocumentInput
+  ): Promise<ProjectDocument> {
+    return this.database.write(() => {
+      const existing = this.requireProjectDocument(documentId);
+      const updates: string[] = [];
+      const values: string[] = [];
+
+      if (patch.title !== undefined && patch.title.trim() !== existing.title) {
+        updates.push("title = ?");
+        values.push(cleanTitle(patch.title, "Document title"));
+      }
+
+      if (patch.body !== undefined && patch.body !== existing.body) {
+        updates.push("body = ?");
+        values.push(patch.body);
+      }
+
+      if (!updates.length) {
+        return existing;
+      }
+
+      updates.push("updated_at = ?");
+      values.push(now());
+      values.push(documentId);
+      this.database.run(`UPDATE project_documents SET ${updates.join(", ")} WHERE id = ?`, values);
+      this.recordActivity(existing.projectId, null, "document.updated", `Planning document "${existing.title}" updated`);
+      return this.requireProjectDocument(documentId);
+    });
+  }
+
+  async archiveProjectDocument(documentId: string): Promise<void> {
+    await this.database.write(() => {
+      const document = this.requireProjectDocument(documentId);
+      const timestamp = now();
+      this.database.run("UPDATE project_documents SET archived_at = ?, updated_at = ? WHERE id = ?", [
+        timestamp,
+        timestamp,
+        documentId
+      ]);
+      this.recordActivity(document.projectId, null, "document.archived", `Planning document "${document.title}" archived`);
+    });
+  }
+
+  async importDesignAsset(projectId: string): Promise<DesignAsset | null> {
+    this.requireProject(projectId);
+
+    const result = await dialog.showOpenDialog({
+      title: "Import design image",
+      properties: ["openFile"],
+      filters: [
+        {
+          name: "Images",
+          extensions: ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"]
+        }
+      ]
+    });
+
+    if (result.canceled || !result.filePaths[0]) {
+      return null;
+    }
+
+    const sourcePath = result.filePaths[0];
+    const id = randomUUID();
+    const assetDir = path.join(this.database.dataDir, "design-assets", projectId);
+    const extension = path.extname(sourcePath).toLowerCase() || ".asset";
+    const destinationPath = path.join(assetDir, `${id}${extension}`);
+
+    await fs.mkdir(assetDir, { recursive: true });
+    await fs.copyFile(sourcePath, destinationPath);
+
+    return this.database.write(() => {
+      this.requireProject(projectId);
+      const timestamp = now();
+      const displayName = path.basename(sourcePath);
+      this.database.run(
+        `
+          INSERT INTO design_assets (
+            id, project_id, card_id, document_id, display_name, file_path,
+            original_path, mime_type, archived_at, created_at, updated_at
+          ) VALUES (?, ?, NULL, NULL, ?, ?, ?, ?, NULL, ?, ?)
+        `,
+        [
+          id,
+          projectId,
+          displayName,
+          destinationPath,
+          sourcePath,
+          mimeTypeForFile(sourcePath),
+          timestamp,
+          timestamp
+        ]
+      );
+      this.recordActivity(projectId, null, "design_asset.imported", `Design asset "${displayName}" imported`);
+      return this.requireDesignAsset(id);
+    });
+  }
+
+  async updateDesignAsset(
+    assetId: string,
+    patch: UpdateDesignAssetInput
+  ): Promise<DesignAsset> {
+    return this.database.write(() => {
+      const existing = this.requireDesignAsset(assetId);
+      const updates: string[] = [];
+      const values: (string | null)[] = [];
+
+      if (patch.displayName !== undefined && patch.displayName.trim() !== existing.displayName) {
+        updates.push("display_name = ?");
+        values.push(cleanTitle(patch.displayName, "Asset name"));
+      }
+
+      if (patch.cardId !== undefined && patch.cardId !== existing.cardId) {
+        if (patch.cardId) {
+          const card = this.requireCard(patch.cardId);
+          if (card.projectId !== existing.projectId) {
+            throw new Error("Design assets can only be linked to cards in the same project.");
+          }
+        }
+        updates.push("card_id = ?");
+        values.push(patch.cardId || null);
+      }
+
+      if (patch.documentId !== undefined && patch.documentId !== existing.documentId) {
+        if (patch.documentId) {
+          const document = this.requireProjectDocument(patch.documentId);
+          if (document.projectId !== existing.projectId) {
+            throw new Error("Design assets can only be linked to documents in the same project.");
+          }
+        }
+        updates.push("document_id = ?");
+        values.push(patch.documentId || null);
+      }
+
+      if (!updates.length) {
+        return existing;
+      }
+
+      updates.push("updated_at = ?");
+      values.push(now());
+      values.push(assetId);
+      this.database.run(`UPDATE design_assets SET ${updates.join(", ")} WHERE id = ?`, values);
+      this.recordActivity(existing.projectId, null, "design_asset.updated", `Design asset "${existing.displayName}" updated`);
+      return this.requireDesignAsset(assetId);
+    });
+  }
+
+  async archiveDesignAsset(assetId: string): Promise<void> {
+    await this.database.write(() => {
+      const asset = this.requireDesignAsset(assetId);
+      const timestamp = now();
+      this.database.run("UPDATE design_assets SET archived_at = ?, updated_at = ? WHERE id = ?", [
+        timestamp,
+        timestamp,
+        assetId
+      ]);
+      this.recordActivity(asset.projectId, null, "design_asset.archived", `Design asset "${asset.displayName}" archived`);
+    });
+  }
+
   async linkObservationToCard(cardId: string, observationId: string): Promise<void> {
     await this.database.write(() => {
       const card = this.requireCard(cardId);
@@ -474,6 +677,16 @@ export class ProjectBoardService {
       this.database.run(
         "INSERT OR IGNORE INTO card_observations (card_id, observation_id, created_at) VALUES (?, ?, ?)",
         [cardId, observationId, now()]
+      );
+      this.database.run(
+        `
+          UPDATE observations
+          SET project_id = COALESCE(project_id, ?),
+              workspace_id = COALESCE(workspace_id, ?),
+              updated_at = ?
+          WHERE id = ?
+        `,
+        [card.projectId, this.requireProject(card.projectId).workspaceId, now(), observationId]
       );
       this.recordActivity(card.projectId, card.id, "observation.linked", `Observation linked: ${observation.body}`);
     });
@@ -541,6 +754,20 @@ export class ProjectBoardService {
     await shell.openPath(this.database.dataDir);
   }
 
+  private resolveObservationScope(input: CreateObservationInput): {
+    workspaceId: string | null;
+    projectId: string | null;
+  } {
+    const projectId = input.projectId?.trim();
+    if (projectId) {
+      const project = this.requireProject(projectId);
+      return { workspaceId: project.workspaceId, projectId: project.id };
+    }
+
+    const workspaceId = input.workspaceId?.trim() || this.getWorkspace().id;
+    return { workspaceId, projectId: null };
+  }
+
   private async ingestAgentInbox(): Promise<void> {
     let raw = "";
 
@@ -568,14 +795,18 @@ export class ProjectBoardService {
     await this.database.write(() => {
       for (const input of inputs) {
         const timestamp = now();
+        const scope = this.resolveObservationScope(input);
         this.database.run(
           `
             INSERT INTO observations (
-              id, body, source, project_path, kind, archived_at, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?)
+              id, workspace_id, project_id, body, source, project_path, kind,
+              archived_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
           `,
           [
             randomUUID(),
+            scope.workspaceId,
+            scope.projectId,
             input.body.trim(),
             input.source?.trim() || "Agent",
             input.projectPath?.trim() || "",
@@ -879,10 +1110,46 @@ export class ProjectBoardService {
       .map((row) => this.mapProject(row));
   }
 
-  private listObservations(): Observation[] {
+  private listObservations(context: {
+    projectId: string | null;
+    workspaceId: string | null;
+  }): Observation[] {
+    const { projectId, workspaceId } = context;
+    const params = projectId
+      ? [projectId, workspaceId ?? "", projectId]
+      : [workspaceId ?? ""];
+    const scopeFilter = projectId
+      ? `
+          AND (
+            project_id = ?
+            OR (project_id IS NULL AND workspace_id = ?)
+            OR (project_id IS NULL AND workspace_id IS NULL)
+            OR EXISTS (
+              SELECT 1
+              FROM card_observations co
+              INNER JOIN cards c ON c.id = co.card_id
+              WHERE co.observation_id = observations.id
+                AND c.project_id = ?
+            )
+          )
+        `
+      : `
+          AND (
+            workspace_id = ?
+            OR (project_id IS NULL AND workspace_id IS NULL)
+          )
+        `;
+
     return this.database
       .all<Row>(
-        "SELECT * FROM observations WHERE archived_at IS NULL ORDER BY created_at DESC"
+        `
+          SELECT *
+          FROM observations
+          WHERE archived_at IS NULL
+          ${scopeFilter}
+          ORDER BY created_at DESC
+        `,
+        params
       )
       .map((row) => this.mapObservation(row));
   }
@@ -900,6 +1167,8 @@ export class ProjectBoardService {
         [projectId]
       )
       .map((row) => this.mapTag(row));
+    const documents = this.listDocumentsForProject(projectId);
+    const designAssets = this.listDesignAssetsForProject(projectId);
     const recentActivity = this.database
       .all<Row>(
         "SELECT * FROM activity_events WHERE project_id = ? ORDER BY created_at DESC LIMIT 30",
@@ -907,7 +1176,25 @@ export class ProjectBoardService {
       )
       .map((row) => this.mapActivity(row));
 
-    return { project, board, columns, tags, recentActivity };
+    return { project, board, columns, tags, documents, designAssets, recentActivity };
+  }
+
+  private listDocumentsForProject(projectId: string): ProjectDocument[] {
+    return this.database
+      .all<Row>(
+        "SELECT * FROM project_documents WHERE project_id = ? AND archived_at IS NULL ORDER BY updated_at DESC, title ASC",
+        [projectId]
+      )
+      .map((row) => this.mapProjectDocument(row));
+  }
+
+  private listDesignAssetsForProject(projectId: string): DesignAsset[] {
+    return this.database
+      .all<Row>(
+        "SELECT * FROM design_assets WHERE project_id = ? AND archived_at IS NULL ORDER BY updated_at DESC, display_name ASC",
+        [projectId]
+      )
+      .map((row) => this.mapDesignAsset(row));
   }
 
   private listColumnsForBoard(boardId: string): BoardColumn[] {
@@ -1044,6 +1331,22 @@ export class ProjectBoardService {
     return this.mapObservation(row);
   }
 
+  private requireProjectDocument(documentId: string): ProjectDocument {
+    const row = this.database.get<Row>("SELECT * FROM project_documents WHERE id = ?", [documentId]);
+    if (!row) {
+      throw new Error("Planning document was not found.");
+    }
+    return this.mapProjectDocument(row);
+  }
+
+  private requireDesignAsset(assetId: string): DesignAsset {
+    const row = this.database.get<Row>("SELECT * FROM design_assets WHERE id = ?", [assetId]);
+    if (!row) {
+      throw new Error("Design asset was not found.");
+    }
+    return this.mapDesignAsset(row);
+  }
+
   private mapProject(row: Row): Project {
     return {
       id: asString(row.id),
@@ -1165,6 +1468,35 @@ export class ProjectBoardService {
     };
   }
 
+  private mapProjectDocument(row: Row): ProjectDocument {
+    return {
+      id: asString(row.id),
+      projectId: asString(row.project_id),
+      title: asString(row.title),
+      body: asString(row.body),
+      archivedAt: asNullableString(row.archived_at),
+      createdAt: asString(row.created_at),
+      updatedAt: asString(row.updated_at)
+    };
+  }
+
+  private mapDesignAsset(row: Row): DesignAsset {
+    const filePath = asString(row.file_path);
+    return {
+      id: asString(row.id),
+      projectId: asString(row.project_id),
+      cardId: asNullableString(row.card_id),
+      documentId: asNullableString(row.document_id),
+      displayName: asString(row.display_name),
+      filePath,
+      fileUrl: filePath ? pathToFileURL(filePath).toString() : "",
+      mimeType: asString(row.mime_type),
+      archivedAt: asNullableString(row.archived_at),
+      createdAt: asString(row.created_at),
+      updatedAt: asString(row.updated_at)
+    };
+  }
+
   private mapChecklistItem(row: Row): ChecklistItem {
     return {
       id: asString(row.id),
@@ -1201,15 +1533,129 @@ export class ProjectBoardService {
   }
 
   private mapObservation(row: Row): Observation {
+    const id = asString(row.id);
+
     return {
-      id: asString(row.id),
+      id,
+      workspaceId: asNullableString(row.workspace_id),
+      projectId: asNullableString(row.project_id),
       body: asString(row.body),
+      label: observationLabel(asString(row.body)),
       source: asString(row.source, "Project Board"),
       projectPath: asString(row.project_path),
       kind: asString(row.kind, "observation"),
+      status: this.getObservationStatus(id),
       archivedAt: asNullableString(row.archived_at),
       createdAt: asString(row.created_at),
       updatedAt: asString(row.updated_at)
     };
   }
+
+  private getObservationStatus(observationId: string): Observation["status"] {
+    const linkedCards = this.database.all<{ archived_at: unknown; is_completion_column: unknown }>(
+      `
+        SELECT c.archived_at, col.is_completion_column
+        FROM card_observations co
+        INNER JOIN cards c ON c.id = co.card_id
+        INNER JOIN columns col ON col.id = c.column_id
+        WHERE co.observation_id = ?
+      `,
+      [observationId]
+    );
+
+    if (!linkedCards.length) {
+      return "active";
+    }
+
+    const allResolved = linkedCards.every((card) =>
+      asNullableString(card.archived_at) !== null || asBool(card.is_completion_column)
+    );
+
+    return allResolved ? "resolved" : "converted";
+  }
 }
+
+function mimeTypeForFile(filePath: string): string {
+  switch (path.extname(filePath).toLowerCase()) {
+    case ".png":
+      return "image/png";
+    case ".jpg":
+    case ".jpeg":
+      return "image/jpeg";
+    case ".gif":
+      return "image/gif";
+    case ".webp":
+      return "image/webp";
+    case ".bmp":
+      return "image/bmp";
+    case ".svg":
+      return "image/svg+xml";
+    default:
+      return "application/octet-stream";
+  }
+}
+
+function observationLabel(body: string): string {
+  const normalized = body.trim().toLowerCase();
+  if (normalized.includes("add card") || normalized.includes("plus button")) {
+    return "Card creation UX";
+  }
+  if (normalized.includes("meaningless code") || normalized.includes("actual observation semantics")) {
+    return "Semantic labels";
+  }
+  if (normalized.includes("tied to certain observations") || normalized.includes("observation tag")) {
+    return "Observation links";
+  }
+  if (normalized.includes("delete project workspaces")) {
+    return "Workspace cleanup";
+  }
+  if (normalized.includes("converted into backlog") || normalized.includes("capture list")) {
+    return "Capture lifecycle";
+  }
+  if (normalized.includes("planning documents")) {
+    return "Planning docs";
+  }
+  if (normalized.includes("images") && normalized.includes("ui design")) {
+    return "Design assets";
+  }
+  if (normalized.includes("project-specific") || normalized.includes("workspace-specific")) {
+    return "Project/workspace scope";
+  }
+
+  return titleCase(
+    body
+      .replace(/[^\p{L}\p{N}\s]/gu, " ")
+      .split(/\s+/)
+      .filter((word) => word.length > 2 && !COMMON_LABEL_WORDS.has(word.toLowerCase()))
+      .slice(0, 4)
+      .join(" ")
+  ) || "Observation";
+}
+
+function titleCase(value: string): string {
+  return value
+    .trim()
+    .split(/\s+/)
+    .map((word) => `${word.slice(0, 1).toUpperCase()}${word.slice(1).toLowerCase()}`)
+    .join(" ");
+}
+
+const COMMON_LABEL_WORDS = new Set([
+  "the",
+  "and",
+  "for",
+  "that",
+  "this",
+  "with",
+  "where",
+  "should",
+  "there",
+  "could",
+  "would",
+  "into",
+  "from",
+  "have",
+  "been",
+  "items",
+  "actual"
+]);

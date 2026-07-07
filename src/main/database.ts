@@ -26,6 +26,7 @@ export class LocalDatabase {
 
     await fs.mkdir(dataDir, { recursive: true });
     await fs.mkdir(path.join(dataDir, "attachments", "copied"), { recursive: true });
+    await fs.mkdir(path.join(dataDir, "design-assets"), { recursive: true });
     await fs.mkdir(backupDir, { recursive: true });
     await fs.mkdir(path.join(dataDir, "exports"), { recursive: true });
     await fs.mkdir(path.join(dataDir, "logs"), { recursive: true });
@@ -98,6 +99,10 @@ export class LocalDatabase {
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
     const backupPath = path.join(this.backupDir, `workspace-${timestamp}.sqlite`);
     await fs.copyFile(this.dataPath, backupPath);
+    const designAssetsPath = path.join(this.dataDir, "design-assets");
+    if (fsSync.existsSync(designAssetsPath)) {
+      await fs.cp(designAssetsPath, `${backupPath}.design-assets`, { recursive: true });
+    }
     return backupPath;
   }
 
@@ -184,6 +189,30 @@ export class LocalDatabase {
         UNIQUE(project_id, name)
       );
 
+      CREATE TABLE IF NOT EXISTS project_documents (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        title TEXT NOT NULL,
+        body TEXT,
+        archived_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS design_assets (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        card_id TEXT REFERENCES cards(id) ON DELETE SET NULL,
+        document_id TEXT REFERENCES project_documents(id) ON DELETE SET NULL,
+        display_name TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        original_path TEXT,
+        mime_type TEXT,
+        archived_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS card_tags (
         card_id TEXT NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
         tag_id TEXT NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
@@ -257,6 +286,8 @@ export class LocalDatabase {
 
       CREATE TABLE IF NOT EXISTS observations (
         id TEXT PRIMARY KEY,
+        workspace_id TEXT REFERENCES workspaces(id) ON DELETE CASCADE,
+        project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
         body TEXT NOT NULL,
         source TEXT,
         project_path TEXT,
@@ -274,6 +305,10 @@ export class LocalDatabase {
       CREATE INDEX IF NOT EXISTS idx_cards_column_position ON cards(column_id, position);
       CREATE INDEX IF NOT EXISTS idx_cards_due_date ON cards(due_date);
       CREATE INDEX IF NOT EXISTS idx_tags_project_name ON tags(project_id, name);
+      CREATE INDEX IF NOT EXISTS idx_project_documents_project ON project_documents(project_id, updated_at);
+      CREATE INDEX IF NOT EXISTS idx_design_assets_project ON design_assets(project_id, updated_at);
+      CREATE INDEX IF NOT EXISTS idx_design_assets_card ON design_assets(card_id);
+      CREATE INDEX IF NOT EXISTS idx_design_assets_document ON design_assets(document_id);
       CREATE INDEX IF NOT EXISTS idx_card_tags_tag ON card_tags(tag_id);
       CREATE INDEX IF NOT EXISTS idx_card_observations_observation ON card_observations(observation_id);
       CREATE INDEX IF NOT EXISTS idx_comments_card_created ON comments(card_id, created_at);
@@ -282,9 +317,51 @@ export class LocalDatabase {
       CREATE INDEX IF NOT EXISTS idx_activity_project_created ON activity_events(project_id, created_at);
       CREATE INDEX IF NOT EXISTS idx_observations_created ON observations(created_at);
     `);
+    this.ensureColumn("observations", "workspace_id", "workspace_id TEXT");
+    this.ensureColumn("observations", "project_id", "project_id TEXT");
     this.ensureColumn("observations", "source", "source TEXT");
     this.ensureColumn("observations", "project_path", "project_path TEXT");
     this.ensureColumn("observations", "kind", "kind TEXT NOT NULL DEFAULT 'observation'");
+    this.db.run(`
+      CREATE INDEX IF NOT EXISTS idx_observations_workspace ON observations(workspace_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_observations_project ON observations(project_id, created_at);
+    `);
+    this.backfillObservationScopes();
+  }
+
+  private backfillObservationScopes(): void {
+    this.db.run(`
+      UPDATE observations
+      SET
+        project_id = (
+          SELECT c.project_id
+          FROM card_observations co
+          INNER JOIN cards c ON c.id = co.card_id
+          WHERE co.observation_id = observations.id
+          ORDER BY co.created_at DESC
+          LIMIT 1
+        ),
+        workspace_id = (
+          SELECT p.workspace_id
+          FROM card_observations co
+          INNER JOIN cards c ON c.id = co.card_id
+          INNER JOIN projects p ON p.id = c.project_id
+          WHERE co.observation_id = observations.id
+          ORDER BY co.created_at DESC
+          LIMIT 1
+        )
+      WHERE project_id IS NULL
+        AND EXISTS (
+          SELECT 1 FROM card_observations co WHERE co.observation_id = observations.id
+        );
+    `);
+
+    const workspace = this.get<{ id: string }>("SELECT id FROM workspaces LIMIT 1");
+    if (workspace) {
+      this.db.run("UPDATE observations SET workspace_id = ? WHERE workspace_id IS NULL", [
+        workspace.id
+      ]);
+    }
   }
 
   private ensureColumn(table: string, column: string, definition: string): void {

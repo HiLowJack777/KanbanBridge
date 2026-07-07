@@ -77,19 +77,67 @@ export interface ActivityEvent {
   createdAt: string;
 }
 
-export interface Observation {
+export interface ProjectDocument {
   id: string;
+  projectId: string;
+  title: string;
   body: string;
-  source: string;
-  projectPath: string;
-  kind: string;
   archivedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
 
+export interface CreateProjectDocumentInput {
+  title: string;
+  body?: string;
+}
+
+export interface UpdateProjectDocumentInput {
+  title?: string;
+  body?: string;
+}
+
+export interface DesignAsset {
+  id: string;
+  projectId: string;
+  cardId: string | null;
+  documentId: string | null;
+  displayName: string;
+  filePath: string;
+  fileUrl: string;
+  mimeType: string;
+  archivedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface UpdateDesignAssetInput {
+  displayName?: string;
+  cardId?: string | null;
+  documentId?: string | null;
+}
+
+export interface Observation {
+  id: string;
+  workspaceId: string | null;
+  projectId: string | null;
+  body: string;
+  label: string;
+  source: string;
+  projectPath: string;
+  kind: string;
+  status: ObservationStatus;
+  archivedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type ObservationStatus = "active" | "converted" | "resolved";
+
 export interface CreateObservationInput {
   body: string;
+  workspaceId?: string;
+  projectId?: string;
   source?: string;
   projectPath?: string;
   kind?: string;
@@ -134,6 +182,8 @@ export interface BoardState {
   board: Board;
   columns: BoardColumn[];
   tags: Tag[];
+  documents: ProjectDocument[];
+  designAssets: DesignAsset[];
   recentActivity: ActivityEvent[];
 }
 
@@ -233,6 +283,12 @@ export interface ProjectBoardApi {
   removeTag(cardId: string, tagId: string): Promise<void>;
   linkObservationToCard(cardId: string, observationId: string): Promise<void>;
   unlinkObservationFromCard(cardId: string, observationId: string): Promise<void>;
+  createProjectDocument(projectId: string, input: CreateProjectDocumentInput): Promise<ProjectDocument>;
+  updateProjectDocument(documentId: string, patch: UpdateProjectDocumentInput): Promise<ProjectDocument>;
+  archiveProjectDocument(documentId: string): Promise<void>;
+  importDesignAsset(projectId: string): Promise<DesignAsset | null>;
+  updateDesignAsset(assetId: string, patch: UpdateDesignAssetInput): Promise<DesignAsset>;
+  archiveDesignAsset(assetId: string): Promise<void>;
   addChecklistItem(cardId: string, text: string): Promise<ChecklistItem>;
   updateChecklistItem(itemId: string, patch: UpdateChecklistItemInput): Promise<ChecklistItem>;
   deleteChecklistItem(itemId: string): Promise<void>;

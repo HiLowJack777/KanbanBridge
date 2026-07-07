@@ -49,11 +49,13 @@ async function observe(args) {
   const body = options._.join(" ").trim() || options.body || options.text;
 
   if (!body) {
-    throw new Error("Usage: agent-bridge observe \"observation text\" [--source codex] [--project-path C:\\path]");
+    throw new Error("Usage: agent-bridge observe \"observation text\" [--source codex] [--project-id id] [--project-path C:\\path]");
   }
 
   const input = {
     body,
+    projectId: optionValue(options["project-id"]),
+    workspaceId: optionValue(options["workspace-id"]),
     source: options.source || "Agent",
     projectPath: options["project-path"] || process.cwd(),
     kind: options.kind || "observation"
@@ -435,7 +437,7 @@ function help() {
   console.log(`Project Board agent bridge
 
 Commands:
-  observe "text" [--source codex] [--project-path C:\\path] [--kind observation]
+  observe "text" [--source codex] [--project-id id] [--workspace-id id] [--project-path C:\\path] [--kind observation]
   list [--limit 20]
   snapshot [--project-id id]
   card "title" [--column Backlog] [--description text] [--priority High] [--observation-id id] [--checklist "one|two"]
@@ -450,7 +452,7 @@ Commands:
   archive <observation-id>
 
 Examples:
-  node scripts/agent-bridge.mjs observe "The card modal should remember its last tab." --source codex
+  node scripts/agent-bridge.mjs observe "The card modal should remember its last tab." --source codex --project-id 0e33a86f-7126-488f-9d2a-0aaaffbc6d79
   node scripts/agent-bridge.mjs observe "Drag feels better now." --source claude-code --project-path "C:\\repo"
   node scripts/agent-bridge.mjs card "Link observations to cards" --column Backlog --priority High --observation-id 5bd9c675-06b9-4973-8c51-76ec605ddba7 --checklist "Design relation|Render linked notes"
   node scripts/agent-bridge.mjs update-card 15bcece6-fddc-4a6b-9c5a-b57b2c6807ac --priority High
