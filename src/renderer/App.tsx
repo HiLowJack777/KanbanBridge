@@ -32,6 +32,7 @@ import {
   Image as ImageIcon,
   Link2,
   MessageSquare,
+  Pencil,
   Plus,
   Search,
   Settings,
@@ -61,6 +62,8 @@ const TAG_COLORS = ["#0f766e", "#2563eb", "#b45309", "#be123c", "#64748b"];
 
 type DueFilter = "all" | "overdue" | "today" | "week" | "none";
 type ObservationFilter = ObservationStatus | "all";
+type DropPlacement = "before" | "after" | "inside";
+type DropTarget = { id: string; placement: DropPlacement };
 
 function App() {
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null);
@@ -344,7 +347,7 @@ function App() {
                 () =>
                   window.projectBoard.createObservation({
                     body,
-                    source: "Project Board",
+                    source: "KanbanBridge",
                     workspaceId: snapshot.workspace.id,
                     projectId: board.project.id
                   }),
@@ -355,6 +358,12 @@ function App() {
               runMutation(
                 () => window.projectBoard.archiveObservation(observationId),
                 "Observation archived"
+              )
+            }
+            onUpdateObservation={(observationId, body) =>
+              runMutation(
+                () => window.projectBoard.updateObservation(observationId, { body }),
+                "Observation updated"
               )
             }
             onCreateCardFromObservation={(observation) => {
@@ -371,14 +380,17 @@ function App() {
           <PlanningPanel
             documents={board.documents}
             onClose={() => setShowPlanning(false)}
-            onCreateDocument={(input) =>
-              runMutation(
-                () => window.projectBoard.createProjectDocument(board.project.id, input),
-                "Planning document created"
-              )
+            onImportDocument={() =>
+              runMutation(async () => {
+                const document = await window.projectBoard.importProjectDocument(board.project.id);
+                if (document) {
+                  setNotice(`Planning document uploaded: ${document.title}`);
+                  window.setTimeout(() => setNotice(null), 3500);
+                }
+              })
             }
-            onUpdateDocument={(documentId, patch) =>
-              runMutation(() => window.projectBoard.updateProjectDocument(documentId, patch))
+            onOpenDocument={(documentId) =>
+              runMutation(() => window.projectBoard.openProjectDocument(documentId))
             }
             onArchiveDocument={(documentId) =>
               runMutation(
@@ -511,7 +523,7 @@ function ArchiveProjectPanel({
           workspace. Manual backups are not deleted.
         </p>
         <p className="archive-warning muted">
-          If this is the last active project, Project Board will create a fresh starter project so the workspace stays
+          If this is the last active project, KanbanBridge will create a fresh starter project so the workspace stays
           usable.
         </p>
       </section>
@@ -666,7 +678,7 @@ function TopBar({
   onOpenObservations: () => void;
   onOpenSettings: () => void;
 }) {
-  const visibleTags = tags.filter((tag) => !isCodeObservationTag(tag.name));
+  const visibleTags = tags.filter((tag) => !isObservationTag(tag.name));
 
   return (
     <header className="topbar">
@@ -765,6 +777,7 @@ function BoardCanvas({
   const [dragColumns, setDragColumns] = useState(columns);
   const [activeCardId, setActiveCardId] = useState<string | null>(null);
   const [newColumnName, setNewColumnName] = useState("");
+  const lastDropTargetRef = useRef<DropTarget | null>(null);
   const activeCard =
     activeCardId ?
       findCardLocation(dragColumns, activeCardId)?.card ??
@@ -779,31 +792,36 @@ function BoardCanvas({
   function handleDragStart(event: DragStartEvent) {
     setActiveCardId(String(event.active.id));
     setDragColumns(columns);
+    lastDropTargetRef.current = null;
   }
 
   function handleDragOver(event: DragOverEvent) {
-    const { active, over } = event;
+    const target = dropTargetFromEvent(event);
 
-    if (!over || active.id === over.id) {
+    if (!target) {
       return;
     }
 
+    lastDropTargetRef.current = target;
     setDragColumns((current) =>
-      moveCardPreview(current, String(active.id), String(over.id))
+      moveCardPreview(current, String(event.active.id), target)
     );
   }
 
   function handleDragEnd(event: DragEndEvent) {
-    const { active, over } = event;
+    const { active } = event;
     setActiveCardId(null);
 
-    if (!over || active.id === over.id) {
+    const target = dropTargetFromEvent(event) ?? lastDropTargetRef.current;
+    lastDropTargetRef.current = null;
+
+    if (!target) {
       setDragColumns(columns);
       return;
     }
 
     const cardId = String(active.id);
-    const finalColumns = moveCardPreview(dragColumns, cardId, String(over.id));
+    const finalColumns = moveCardPreview(columns, cardId, target);
     const originalLocation = findCardLocation(columns, cardId);
     const finalLocation = findCardLocation(finalColumns, cardId);
     setDragColumns(finalColumns);
@@ -824,6 +842,7 @@ function BoardCanvas({
 
   function handleDragCancel() {
     setActiveCardId(null);
+    lastDropTargetRef.current = null;
     setDragColumns(columns);
   }
 
@@ -995,6 +1014,7 @@ function CardTile({
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: card.id
   });
+  const { role: _sortableRole, tabIndex: _sortableTabIndex, ...sortableAttributes } = attributes;
   const style = {
     transform: CSS.Transform.toString(transform),
     transition: transition ?? "transform 180ms cubic-bezier(0.2, 0, 0, 1)"
@@ -1009,6 +1029,8 @@ function CardTile({
       tabIndex={0}
       title="Double-click to open"
       aria-label={`Open ${card.title}`}
+      {...sortableAttributes}
+      {...listeners}
       onClick={(event) => {
         if (event.detail === 2) {
           onOpen(card.id);
@@ -1024,8 +1046,6 @@ function CardTile({
       <button
         type="button"
         className="drag-handle"
-        {...attributes}
-        {...listeners}
         aria-label={`Drag ${card.title}`}
         title="Drag card"
       >
@@ -1036,6 +1056,7 @@ function CardTile({
         <button
           type="button"
           className="icon-button quiet"
+          onPointerDown={(event) => event.stopPropagation()}
           onClick={(event) => {
             event.stopPropagation();
             onDuplicate(card.id);
@@ -1048,6 +1069,7 @@ function CardTile({
         <button
           type="button"
           className="icon-button quiet"
+          onPointerDown={(event) => event.stopPropagation()}
           onClick={(event) => {
             event.stopPropagation();
             onArchive(card.id);
@@ -1075,7 +1097,7 @@ function CardDragOverlay({ card }: { card: Card }) {
 
 function CardTileBody({ card }: { card: Card }) {
   const checklistDone = card.checklist.filter((item) => item.isComplete).length;
-  const visibleTags = card.tags.filter((tag) => !isCodeObservationTag(tag.name));
+  const visibleTags = card.tags.filter((tag) => !isObservationTag(tag.name));
 
   return (
     <div className="card-body">
@@ -1146,6 +1168,7 @@ function NewCardPanel({
   const [priority, setPriority] = useState<Priority>("");
   const [dueDate, setDueDate] = useState("");
   const [tagIds, setTagIds] = useState<string[]>([]);
+  const visibleTags = tags.filter((tag) => !isObservationTag(tag.name));
 
   useEffect(() => {
     if (sourceObservation) {
@@ -1243,14 +1266,14 @@ function NewCardPanel({
           />
         </label>
 
-        {tags.length ? (
+        {visibleTags.length ? (
           <section className="detail-section">
             <div className="section-heading">
               <h3>Tags</h3>
               <span>{tagIds.length} selected</span>
             </div>
             <div className="tag-picker">
-              {tags.map((tag) => (
+              {visibleTags.map((tag) => (
                 <button
                   type="button"
                   key={tag.id}
@@ -1333,6 +1356,9 @@ function DetailPanel({
   const appliedTagIds = new Set(activeCard.tags.map((tag) => tag.id));
   const linkedObservationIds = new Set(activeCard.observations.map((observation) => observation.id));
   const availableObservations = observations.filter((observation) => !linkedObservationIds.has(observation.id));
+  const visibleTags = tags.filter((tag) =>
+    activeCard.observations.length ? !isObservationTag(tag.name) : !isCodeObservationTag(tag.name)
+  );
 
   function saveTitle() {
     if (title.trim() && title.trim() !== activeCard.title) {
@@ -1453,7 +1479,7 @@ function DetailPanel({
           <h3>Tags</h3>
         </div>
         <div className="tag-picker">
-          {tags.map((tag) => (
+          {visibleTags.map((tag) => (
             <button
               type="button"
               key={tag.id}
@@ -1655,56 +1681,16 @@ function SettingsPanel({
 function PlanningPanel({
   documents,
   onClose,
-  onCreateDocument,
-  onUpdateDocument,
+  onImportDocument,
+  onOpenDocument,
   onArchiveDocument
 }: {
   documents: ProjectDocument[];
   onClose: () => void;
-  onCreateDocument: (input: { title: string; body?: string }) => void;
-  onUpdateDocument: (documentId: string, patch: { title?: string; body?: string }) => void;
+  onImportDocument: () => void;
+  onOpenDocument: (documentId: string) => void;
   onArchiveDocument: (documentId: string) => void;
 }) {
-  const [selectedId, setSelectedId] = useState<string | null>(documents[0]?.id ?? null);
-  const [newTitle, setNewTitle] = useState("");
-  const selected = documents.find((document) => document.id === selectedId) ?? documents[0] ?? null;
-  const [title, setTitle] = useState(selected?.title ?? "");
-  const [body, setBody] = useState(selected?.body ?? "");
-
-  useEffect(() => {
-    if (selectedId && !documents.some((document) => document.id === selectedId)) {
-      setSelectedId(documents[0]?.id ?? null);
-    }
-  }, [documents, selectedId]);
-
-  useEffect(() => {
-    setTitle(selected?.title ?? "");
-    setBody(selected?.body ?? "");
-  }, [selected?.id, selected?.updatedAt]);
-
-  function createDocument(event: FormEvent) {
-    event.preventDefault();
-    if (!newTitle.trim()) {
-      return;
-    }
-    onCreateDocument({ title: newTitle, body: "" });
-    setNewTitle("");
-  }
-
-  function saveTitle() {
-    if (selected && title.trim() && title.trim() !== selected.title) {
-      onUpdateDocument(selected.id, { title });
-    } else if (selected) {
-      setTitle(selected.title);
-    }
-  }
-
-  function saveBody() {
-    if (selected && body !== selected.body) {
-      onUpdateDocument(selected.id, { body });
-    }
-  }
-
   return (
     <aside className="detail-panel planning-panel">
       <header className="detail-header">
@@ -1717,74 +1703,68 @@ function PlanningPanel({
         </button>
       </header>
 
-      <div className="planning-layout">
-        <section className="planning-list">
-          <form className="planning-create" onSubmit={createDocument}>
-            <input
-              value={newTitle}
-              onChange={(event) => setNewTitle(event.target.value)}
-              placeholder="New document title"
-            />
-            <button type="submit" aria-label="Create planning document">
-              <Plus size={16} />
-            </button>
-          </form>
+      <section className="planning-upload">
+        <div>
+          <p className="eyebrow">Document library</p>
+          <h3>Uploaded project specs and references</h3>
+        </div>
+        <button type="button" className="secondary-button" onClick={onImportDocument}>
+          <Plus size={16} />
+          Upload document
+        </button>
+      </section>
 
-          {documents.length ? (
-            <div className="planning-doc-list">
-              {documents.map((document) => (
-                <button
-                  type="button"
-                  key={document.id}
-                  className={document.id === selected?.id ? "planning-doc active" : "planning-doc"}
-                  onClick={() => setSelectedId(document.id)}
-                >
-                  <strong>{document.title}</strong>
-                  <time>{formatDateTime(document.updatedAt)}</time>
-                </button>
-              ))}
-            </div>
-          ) : (
-            <p className="empty-note">No planning documents yet.</p>
-          )}
-        </section>
-
-        <section className="planning-editor">
-          {selected ? (
-            <>
-              <div className="planning-editor-header">
-                <input
-                  value={title}
-                  onChange={(event) => setTitle(event.target.value)}
-                  onBlur={saveTitle}
-                  aria-label="Document title"
-                />
-                <button
-                  type="button"
-                  className="icon-button quiet"
-                  onClick={() => onArchiveDocument(selected.id)}
-                  aria-label="Archive planning document"
-                  title="Archive document"
-                >
-                  <Archive size={15} />
-                </button>
-              </div>
-              <textarea
-                value={body}
-                onChange={(event) => setBody(event.target.value)}
-                onBlur={saveBody}
-                rows={18}
-                placeholder="Write project brief, specs, implementation notes, decisions, or references..."
-              />
-            </>
-          ) : (
-            <div className="planning-empty">
-              <FileText size={28} />
-              <p>Create a planning document to start capturing project context.</p>
-            </div>
-          )}
-        </section>
-      </div>
+      {documents.length ? (
+        <div className="planning-document-list">
+          {documents.map((document) => {
+            const canOpen = Boolean(document.filePath);
+            return (
+              <article key={document.id} className="planning-document-card">
+                <div className="planning-document-icon">
+                  <FileText size={22} />
+                </div>
+                <div className="planning-document-body">
+                  <h3>{document.title}</h3>
+                  <div className="planning-document-meta">
+                    <span>{documentTypeLabel(document)}</span>
+                    <span>{formatDateTime(document.createdAt)}</span>
+                  </div>
+                  {document.originalPath ? (
+                    <p className="path-text">{document.originalPath}</p>
+                  ) : document.body ? (
+                    <p>{document.body}</p>
+                  ) : null}
+                </div>
+                <div className="planning-document-actions">
+                  <button
+                    type="button"
+                    className="secondary-button compact"
+                    onClick={() => onOpenDocument(document.id)}
+                    disabled={!canOpen}
+                  >
+                    <FolderOpen size={14} />
+                    Open
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-button quiet"
+                    onClick={() => onArchiveDocument(document.id)}
+                    aria-label="Archive planning document"
+                    title="Archive document"
+                  >
+                    <Archive size={15} />
+                  </button>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="planning-empty">
+          <FileText size={28} />
+          <p>No planning documents uploaded yet.</p>
+        </div>
+      )}
     </aside>
   );
 }
@@ -1910,16 +1890,20 @@ function ObservationsPanel({
   onClose,
   onCreateObservation,
   onArchiveObservation,
+  onUpdateObservation,
   onCreateCardFromObservation
 }: {
   observations: Observation[];
   onClose: () => void;
   onCreateObservation: (body: string) => void;
   onArchiveObservation: (observationId: string) => void;
+  onUpdateObservation: (observationId: string, body: string) => void;
   onCreateCardFromObservation: (observation: Observation) => void;
 }) {
   const [body, setBody] = useState("");
   const [filter, setFilter] = useState<ObservationFilter>("active");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editBody, setEditBody] = useState("");
   const filteredObservations = observations.filter((observation) =>
     filter === "all" ? true : observation.status === filter
   );
@@ -1937,6 +1921,27 @@ function ObservationsPanel({
     }
     onCreateObservation(body);
     setBody("");
+  }
+
+  function startEditing(observation: Observation) {
+    setEditingId(observation.id);
+    setEditBody(observation.body);
+  }
+
+  function cancelEditing() {
+    setEditingId(null);
+    setEditBody("");
+  }
+
+  function saveEditing(observation: Observation) {
+    const cleaned = editBody.trim();
+    if (!cleaned) {
+      return;
+    }
+    if (cleaned !== observation.body) {
+      onUpdateObservation(observation.id, cleaned);
+    }
+    cancelEditing();
   }
 
   return (
@@ -1989,10 +1994,39 @@ function ObservationsPanel({
           <div className="observation-list">
             {filteredObservations.map((observation) => (
               <article key={observation.id} className="observation-item">
-                <p>{observation.body}</p>
+                {editingId === observation.id ? (
+                  <div className="observation-edit">
+                    <textarea
+                      value={editBody}
+                      onChange={(event) => setEditBody(event.target.value)}
+                      rows={4}
+                      aria-label="Edit observation"
+                      autoFocus
+                    />
+                    <div className="observation-edit-actions">
+                      <button
+                        type="button"
+                        className="secondary-button compact"
+                        onClick={cancelEditing}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary-button compact primary"
+                        onClick={() => saveEditing(observation)}
+                        disabled={!editBody.trim()}
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <p>{observation.body}</p>
+                )}
                 <div className="observation-meta">
                   <span className={`status-pill ${observation.status}`}>{observation.status}</span>
-                  <span>{observation.source || "Project Board"}</span>
+                  <span>{observation.source || "KanbanBridge"}</span>
                   {observation.projectPath ? <span>{observation.projectPath}</span> : null}
                   <span>{observation.kind || "observation"}</span>
                 </div>
@@ -2009,11 +2043,20 @@ function ObservationsPanel({
                     <button
                       type="button"
                       className="icon-button quiet"
-                      onClick={() => onArchiveObservation(observation.id)}
-                      aria-label="Archive observation"
-                      title="Archive observation"
+                      onClick={() => startEditing(observation)}
+                      aria-label="Edit observation"
+                      title="Edit observation"
                     >
-                      <Archive size={15} />
+                      <Pencil size={15} />
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-button quiet"
+                      onClick={() => onArchiveObservation(observation.id)}
+                      aria-label="Delete observation"
+                      title="Delete observation"
+                    >
+                      <Trash2 size={15} />
                     </button>
                   </div>
                 </footer>
@@ -2038,8 +2081,31 @@ function findCardLocation(columns: BoardColumn[], cardId: string) {
   return null;
 }
 
-function moveCardPreview(columns: BoardColumn[], cardId: string, overId: string): BoardColumn[] {
-  if (cardId === overId) {
+function dropTargetFromEvent(event: DragOverEvent | DragEndEvent): DropTarget | null {
+  const { active, over } = event;
+  if (!over || active.id === over.id) {
+    return null;
+  }
+
+  const overId = String(over.id);
+  if (overId.startsWith("column:")) {
+    return { id: overId, placement: "inside" };
+  }
+
+  const overCenterY = over.rect.top + over.rect.height / 2;
+  const activeRect = active.rect.current.translated ?? active.rect.current.initial;
+  const activeCenterY = activeRect
+    ? activeRect.top + activeRect.height / 2
+    : overCenterY;
+
+  return {
+    id: overId,
+    placement: activeCenterY > overCenterY ? "after" : "before"
+  };
+}
+
+function moveCardPreview(columns: BoardColumn[], cardId: string, target: DropTarget): BoardColumn[] {
+  if (cardId === target.id) {
     return columns;
   }
 
@@ -2051,21 +2117,26 @@ function moveCardPreview(columns: BoardColumn[], cardId: string, overId: string)
   let targetColumnId: string | null = null;
   let targetIndex = 0;
 
-  if (overId.startsWith("column:")) {
-    targetColumnId = overId.slice("column:".length);
+  if (target.id.startsWith("column:")) {
+    targetColumnId = target.id.slice("column:".length);
     targetIndex = columns.find((column) => column.id === targetColumnId)?.cards.length ?? 0;
   } else {
-    const targetLocation = findCardLocation(columns, overId);
+    const targetLocation = findCardLocation(columns, target.id);
     if (!targetLocation) {
       return columns;
     }
     targetColumnId = targetLocation.column.id;
-    targetIndex = targetLocation.index;
+    targetIndex = targetLocation.index + (target.placement === "after" ? 1 : 0);
   }
+
+  const insertionIndex =
+    sourceLocation.column.id === targetColumnId && sourceLocation.index < targetIndex
+      ? targetIndex - 1
+      : targetIndex;
 
   if (
     !targetColumnId ||
-    (sourceLocation.column.id === targetColumnId && sourceLocation.index === targetIndex)
+    (sourceLocation.column.id === targetColumnId && sourceLocation.index === insertionIndex)
   ) {
     return columns;
   }
@@ -2086,7 +2157,7 @@ function moveCardPreview(columns: BoardColumn[], cardId: string, overId: string)
     return columns;
   }
 
-  const safeTargetIndex = Math.max(0, Math.min(targetIndex, targetColumn.cards.length));
+  const safeTargetIndex = Math.max(0, Math.min(insertionIndex, targetColumn.cards.length));
   targetColumn.cards.splice(safeTargetIndex, 0, {
     ...movingCard,
     columnId: targetColumn.id
@@ -2164,6 +2235,15 @@ function formatDate(value: string): string {
   );
 }
 
+function documentTypeLabel(document: ProjectDocument): string {
+  if (document.mimeType && document.mimeType !== "application/octet-stream") {
+    return document.mimeType;
+  }
+
+  const extension = document.title.split(".").pop();
+  return extension && extension !== document.title ? extension.toUpperCase() : "Uploaded document";
+}
+
 function observationTitle(body: string): string {
   const cleaned = body.trim().replace(/\s+/g, " ");
   if (cleaned.length <= 72) {
@@ -2187,6 +2267,11 @@ function observationFilterLabel(filter: ObservationFilter): string {
 
 function isCodeObservationTag(name: string): boolean {
   return /^Obs: [0-9a-f]{8}$/i.test(name.trim());
+}
+
+function isObservationTag(name: string): boolean {
+  const normalized = name.trim().toLowerCase();
+  return normalized === "observation" || normalized.startsWith("obs:");
 }
 
 function formatDateTime(value: string): string {

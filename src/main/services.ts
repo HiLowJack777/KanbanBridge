@@ -31,6 +31,7 @@ import type {
   UpdateChecklistItemInput,
   UpdateColumnInput,
   UpdateDesignAssetInput,
+  UpdateObservationInput,
   UpdateProjectDocumentInput,
   UpdateProjectInput,
   Workspace
@@ -42,7 +43,7 @@ type Row = Record<string, unknown>;
 const BOARD_TEMPLATES: BoardTemplate[] = [
   {
     id: "general",
-    name: "General Project Board",
+    name: "General Kanban Board",
     columns: ["Backlog", "To Do", "In Progress", "Blocked", "Review", "Done"]
   },
   {
@@ -162,7 +163,7 @@ export class ProjectBoardService {
           scope.workspaceId,
           scope.projectId,
           cleaned,
-          input.source?.trim() || "Project Board",
+          input.source?.trim() || "KanbanBridge",
           input.projectPath?.trim() || "",
           input.kind?.trim() || "observation",
           timestamp,
@@ -170,6 +171,38 @@ export class ProjectBoardService {
         ]
       );
       return this.requireObservation(id);
+    });
+  }
+
+  async updateObservation(
+    observationId: string,
+    patch: UpdateObservationInput
+  ): Promise<Observation> {
+    return this.database.write(() => {
+      const existing = this.requireObservation(observationId);
+      const updates: string[] = [];
+      const values: string[] = [];
+
+      if (patch.body !== undefined) {
+        const cleaned = patch.body.trim();
+        if (!cleaned) {
+          throw new Error("Observation is required.");
+        }
+        if (cleaned !== existing.body) {
+          updates.push("body = ?");
+          values.push(cleaned);
+        }
+      }
+
+      if (!updates.length) {
+        return existing;
+      }
+
+      updates.push("updated_at = ?");
+      values.push(now());
+      values.push(observationId);
+      this.database.run(`UPDATE observations SET ${updates.join(", ")} WHERE id = ?`, values);
+      return this.requireObservation(observationId);
     });
   }
 
@@ -509,6 +542,64 @@ export class ProjectBoardService {
     });
   }
 
+  async importProjectDocument(projectId: string): Promise<ProjectDocument | null> {
+    this.requireProject(projectId);
+
+    const result = await dialog.showOpenDialog({
+      title: "Import planning document",
+      properties: ["openFile"],
+      filters: [
+        {
+          name: "Documents",
+          extensions: ["pdf", "doc", "docx", "txt", "md", "rtf", "odt", "xls", "xlsx", "csv", "ppt", "pptx"]
+        },
+        {
+          name: "All files",
+          extensions: ["*"]
+        }
+      ]
+    });
+
+    if (result.canceled || !result.filePaths[0]) {
+      return null;
+    }
+
+    const sourcePath = result.filePaths[0];
+    const id = randomUUID();
+    const documentDir = path.join(this.database.dataDir, "planning-documents", projectId);
+    const extension = path.extname(sourcePath).toLowerCase() || ".document";
+    const destinationPath = path.join(documentDir, `${id}${extension}`);
+
+    await fs.mkdir(documentDir, { recursive: true });
+    await fs.copyFile(sourcePath, destinationPath);
+
+    return this.database.write(() => {
+      this.requireProject(projectId);
+      const timestamp = now();
+      const title = path.basename(sourcePath);
+      this.database.run(
+        `
+          INSERT INTO project_documents (
+            id, project_id, title, body, file_path, original_path, mime_type,
+            archived_at, created_at, updated_at
+          ) VALUES (?, ?, ?, '', ?, ?, ?, NULL, ?, ?)
+        `,
+        [
+          id,
+          projectId,
+          title,
+          destinationPath,
+          sourcePath,
+          mimeTypeForFile(sourcePath),
+          timestamp,
+          timestamp
+        ]
+      );
+      this.recordActivity(projectId, null, "document.imported", `Planning document "${title}" imported`);
+      return this.requireProjectDocument(id);
+    });
+  }
+
   async updateProjectDocument(
     documentId: string,
     patch: UpdateProjectDocumentInput
@@ -552,6 +643,18 @@ export class ProjectBoardService {
       ]);
       this.recordActivity(document.projectId, null, "document.archived", `Planning document "${document.title}" archived`);
     });
+  }
+
+  async openProjectDocument(documentId: string): Promise<void> {
+    const document = this.requireProjectDocument(documentId);
+    if (!document.filePath) {
+      throw new Error("This planning document does not have an uploaded file.");
+    }
+
+    const result = await shell.openPath(document.filePath);
+    if (result) {
+      throw new Error(result);
+    }
   }
 
   async importDesignAsset(projectId: string): Promise<DesignAsset | null> {
@@ -762,6 +865,20 @@ export class ProjectBoardService {
     if (projectId) {
       const project = this.requireProject(projectId);
       return { workspaceId: project.workspaceId, projectId: project.id };
+    }
+
+    const projectName = input.projectName?.trim();
+    if (projectName) {
+      const projects = this.listProjects().filter(
+        (project) => project.name.toLowerCase() === projectName.toLowerCase()
+      );
+      if (projects.length === 1) {
+        return { workspaceId: projects[0].workspaceId, projectId: projects[0].id };
+      }
+      if (projects.length > 1) {
+        throw new Error(`Project name "${projectName}" is ambiguous. Use a project id instead.`);
+      }
+      throw new Error(`Project "${projectName}" was not found.`);
     }
 
     const workspaceId = input.workspaceId?.trim() || this.getWorkspace().id;
@@ -1469,11 +1586,16 @@ export class ProjectBoardService {
   }
 
   private mapProjectDocument(row: Row): ProjectDocument {
+    const filePath = asString(row.file_path);
     return {
       id: asString(row.id),
       projectId: asString(row.project_id),
       title: asString(row.title),
       body: asString(row.body),
+      filePath,
+      fileUrl: filePath ? pathToFileURL(filePath).toString() : "",
+      originalPath: asString(row.original_path),
+      mimeType: asString(row.mime_type),
       archivedAt: asNullableString(row.archived_at),
       createdAt: asString(row.created_at),
       updatedAt: asString(row.updated_at)
@@ -1541,7 +1663,7 @@ export class ProjectBoardService {
       projectId: asNullableString(row.project_id),
       body: asString(row.body),
       label: observationLabel(asString(row.body)),
-      source: asString(row.source, "Project Board"),
+      source: asString(row.source, "KanbanBridge"),
       projectPath: asString(row.project_path),
       kind: asString(row.kind, "observation"),
       status: this.getObservationStatus(id),
@@ -1590,6 +1712,30 @@ function mimeTypeForFile(filePath: string): string {
       return "image/bmp";
     case ".svg":
       return "image/svg+xml";
+    case ".pdf":
+      return "application/pdf";
+    case ".doc":
+      return "application/msword";
+    case ".docx":
+      return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    case ".txt":
+      return "text/plain";
+    case ".md":
+      return "text/markdown";
+    case ".rtf":
+      return "application/rtf";
+    case ".odt":
+      return "application/vnd.oasis.opendocument.text";
+    case ".xls":
+      return "application/vnd.ms-excel";
+    case ".xlsx":
+      return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    case ".csv":
+      return "text/csv";
+    case ".ppt":
+      return "application/vnd.ms-powerpoint";
+    case ".pptx":
+      return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
     default:
       return "application/octet-stream";
   }
@@ -1597,6 +1743,33 @@ function mimeTypeForFile(filePath: string): string {
 
 function observationLabel(body: string): string {
   const normalized = body.trim().toLowerCase();
+  if (
+    normalized.includes("semantic tags") && normalized.includes("slugs") ||
+    normalized.includes("little bit of nonsense")
+  ) {
+    return "Semantic label quality";
+  }
+  if (
+    normalized.includes("dragging cards") ||
+    normalized.includes("snap back") ||
+    normalized.includes("red labeled cards") ||
+    normalized.includes("difficult to move")
+  ) {
+    return "Drag reliability";
+  }
+  if (
+    normalized.includes("observation should have an edit button") ||
+    normalized.includes("deleted and edited") ||
+    normalized.includes("delete") && normalized.includes("edited")
+  ) {
+    return "Observation editing";
+  }
+  if (
+    normalized.includes("two semantic tags") ||
+    normalized.includes("should just have one")
+  ) {
+    return "Duplicate observation labels";
+  }
   if (normalized.includes("add card") || normalized.includes("plus button")) {
     return "Card creation UX";
   }
@@ -1622,14 +1795,21 @@ function observationLabel(body: string): string {
     return "Project/workspace scope";
   }
 
-  return titleCase(
-    body
-      .replace(/[^\p{L}\p{N}\s]/gu, " ")
-      .split(/\s+/)
-      .filter((word) => word.length > 2 && !COMMON_LABEL_WORDS.has(word.toLowerCase()))
-      .slice(0, 4)
-      .join(" ")
-  ) || "Observation";
+  return fallbackObservationLabel(body);
+}
+
+function fallbackObservationLabel(body: string): string {
+  const words = body
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .split(/\s+/)
+    .filter((word) => word.length > 2 && !COMMON_LABEL_WORDS.has(word.toLowerCase()))
+    .slice(0, 4);
+
+  while (words.length && TRAILING_LABEL_WORDS.has(words[words.length - 1].toLowerCase())) {
+    words.pop();
+  }
+
+  return titleCase(words.join(" ")) || "Observation";
 }
 
 function titleCase(value: string): string {
@@ -1657,5 +1837,30 @@ const COMMON_LABEL_WORDS = new Set([
   "have",
   "been",
   "items",
-  "actual"
+  "actual",
+  "able",
+  "like",
+  "seem",
+  "seems",
+  "they",
+  "them",
+  "might",
+  "something",
+  "little",
+  "example",
+  "said",
+  "okay"
+]);
+
+const TRAILING_LABEL_WORDS = new Set([
+  "are",
+  "they",
+  "them",
+  "like",
+  "seem",
+  "seems",
+  "might",
+  "should",
+  "could",
+  "would"
 ]);

@@ -11,6 +11,7 @@ import type {
   UpdateChecklistItemInput,
   UpdateColumnInput,
   UpdateDesignAssetInput,
+  UpdateObservationInput,
   UpdateProjectDocumentInput,
   UpdateProjectInput
 } from "./shared/types";
@@ -23,6 +24,8 @@ const api: ProjectBoardApi = {
     return () => ipcRenderer.removeListener("app:external-change", listener);
   },
   createObservation: (input: CreateObservationInput) => ipcRenderer.invoke("observation:create", input),
+  updateObservation: (observationId: string, patch: UpdateObservationInput) =>
+    ipcRenderer.invoke("observation:update", observationId, patch),
   archiveObservation: (observationId: string) =>
     ipcRenderer.invoke("observation:archive", observationId),
   createProject: (input: CreateProjectInput) => ipcRenderer.invoke("project:create", input),
@@ -51,6 +54,8 @@ const api: ProjectBoardApi = {
   updateProjectDocument: (documentId: string, patch: UpdateProjectDocumentInput) =>
     ipcRenderer.invoke("document:update", documentId, patch),
   archiveProjectDocument: (documentId: string) => ipcRenderer.invoke("document:archive", documentId),
+  importProjectDocument: (projectId: string) => ipcRenderer.invoke("document:import", projectId),
+  openProjectDocument: (documentId: string) => ipcRenderer.invoke("document:open", documentId),
   importDesignAsset: (projectId: string) => ipcRenderer.invoke("designAsset:import", projectId),
   updateDesignAsset: (assetId: string, patch: UpdateDesignAssetInput) =>
     ipcRenderer.invoke("designAsset:update", assetId, patch),

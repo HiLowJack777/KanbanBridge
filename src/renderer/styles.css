@@ -353,9 +353,20 @@ button:focus-visible {
   font-size: 12px;
 }
 
+.secondary-button.primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
 .secondary-button.wide {
   width: 100%;
   justify-content: center;
+}
+
+.secondary-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
 }
 
 .status-banner {
@@ -463,13 +474,17 @@ button:focus-visible {
   border-radius: 8px;
   background: #fff;
   box-shadow: 0 1px 2px rgba(23, 32, 42, 0.04);
-  cursor: default;
+  cursor: grab;
   transform-origin: center;
   transition:
     border-color 120ms ease,
     box-shadow 120ms ease,
     opacity 120ms ease;
   will-change: transform;
+}
+
+.card-tile:active {
+  cursor: grabbing;
 }
 
 .card-tile:focus-visible {
@@ -948,107 +963,85 @@ button:focus-visible {
   width: min(1040px, calc(100vw - 64px));
 }
 
-.planning-layout {
-  display: grid;
-  grid-template-columns: 280px minmax(0, 1fr);
-  min-height: 520px;
-}
-
-.planning-list {
-  display: grid;
-  align-content: start;
-  gap: 10px;
-  padding: 14px;
-  border-right: 1px solid var(--border);
-}
-
-.planning-create {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 34px;
-  gap: 7px;
-}
-
-.planning-create input {
-  min-width: 0;
-  padding: 9px 10px;
-}
-
-.planning-create button {
-  display: inline-flex;
+.planning-upload {
+  display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.planning-upload h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.planning-document-list {
+  display: grid;
+  gap: 10px;
+  max-height: min(680px, calc(100vh - 210px));
+  padding: 14px;
+  overflow: auto;
+}
+
+.planning-document-card {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 12px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: #fff;
+  box-shadow: var(--shadow);
 }
 
-.planning-doc-list {
+.planning-document-icon {
   display: grid;
-  gap: 7px;
-}
-
-.planning-doc {
-  display: grid;
-  gap: 4px;
-  padding: 9px 10px;
-  border: 1px solid var(--border);
+  place-items: center;
+  width: 42px;
+  height: 42px;
   border-radius: 8px;
-  background: #fff;
-  color: #17202a;
-  text-align: left;
-}
-
-.planning-doc.active {
-  border-color: rgba(15, 118, 110, 0.35);
   background: #eaf7f5;
+  color: var(--accent);
 }
 
-.planning-doc strong {
+.planning-document-body {
+  min-width: 0;
+}
+
+.planning-document-body h3 {
+  margin: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 13px;
+  font-size: 14px;
 }
 
-.planning-doc time {
+.planning-document-body p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.planning-document-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
   color: var(--muted);
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 800;
 }
 
-.planning-editor {
-  display: grid;
-  grid-template-rows: auto 1fr;
-  min-width: 0;
-  padding: 14px;
-}
-
-.planning-editor-header {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 30px;
-  gap: 8px;
-  margin-bottom: 10px;
-}
-
-.planning-editor-header input {
-  min-width: 0;
-  border-color: transparent;
-  padding: 5px 0;
-  font-size: 18px;
-  font-weight: 850;
-}
-
-.planning-editor-header input:focus {
-  border-color: var(--border);
-  padding: 5px 8px;
-}
-
-.planning-editor textarea {
-  width: 100%;
-  min-height: 420px;
-  padding: 12px;
-  resize: vertical;
-  line-height: 1.5;
+.planning-document-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .planning-empty {
@@ -1210,6 +1203,23 @@ button:focus-visible {
   font-weight: 550;
   line-height: 1.45;
   overflow-wrap: anywhere;
+}
+
+.observation-edit {
+  display: grid;
+  gap: 8px;
+}
+
+.observation-edit textarea {
+  width: 100%;
+  padding: 9px;
+  resize: vertical;
+}
+
+.observation-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
 }
 
 .observation-item footer {

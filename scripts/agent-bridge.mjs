@@ -12,8 +12,12 @@ const [command = "help", ...args] = process.argv.slice(2);
 try {
   if (command === "observe") {
     await observe(args);
+  } else if (command === "update-observation") {
+    await updateObservation(args);
   } else if (command === "list") {
     await list(args);
+  } else if (command === "projects" || command === "list-projects") {
+    await listProjects();
   } else if (command === "snapshot") {
     await snapshot(args);
   } else if (command === "card") {
@@ -55,6 +59,7 @@ async function observe(args) {
   const input = {
     body,
     projectId: optionValue(options["project-id"]),
+    projectName: optionValue(options["project-name"]),
     workspaceId: optionValue(options["workspace-id"]),
     source: options.source || "Agent",
     projectPath: options["project-path"] || process.cwd(),
@@ -69,18 +74,44 @@ async function observe(args) {
   console.log(JSON.stringify(response, null, 2));
 }
 
+async function updateObservation(args) {
+  const [observationId, ...rest] = args;
+  const options = parseArgs(rest);
+  const body = options._.join(" ").trim() || optionValue(options.body) || optionValue(options.text);
+
+  if (!observationId || !body) {
+    throw new Error("Usage: agent-bridge update-observation <observation-id> \"updated observation text\"");
+  }
+
+  const response = await fetch(`${CONNECTOR_URL}/observations/${encodeURIComponent(observationId)}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ body })
+  });
+
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+
+  console.log(JSON.stringify(await response.json(), null, 2));
+}
+
 async function list(args) {
   const options = parseArgs(args);
   const limit = Number(options.limit || 20);
   const url = new URL(`${CONNECTOR_URL}/observations`);
   const projectId = optionValue(options["project-id"]);
+  const projectName = optionValue(options["project-name"]);
   if (projectId) {
     url.searchParams.set("projectId", projectId);
+  }
+  if (projectName) {
+    url.searchParams.set("projectName", projectName);
   }
   const response = await fetch(url);
 
   if (!response.ok) {
-    throw new Error("Project Board is not running. Open it to list live observations.");
+    throw new Error("KanbanBridge is not running. Open it to list live observations.");
   }
 
   const payload = await response.json();
@@ -88,17 +119,31 @@ async function list(args) {
   console.log(JSON.stringify({ observations }, null, 2));
 }
 
+async function listProjects() {
+  const response = await fetch(`${CONNECTOR_URL}/projects`);
+
+  if (!response.ok) {
+    throw new Error("KanbanBridge is not running. Open it to list live projects.");
+  }
+
+  console.log(JSON.stringify(await response.json(), null, 2));
+}
+
 async function snapshot(args) {
   const options = parseArgs(args);
   const url = new URL(`${CONNECTOR_URL}/snapshot`);
   const projectId = optionValue(options["project-id"]);
+  const projectName = optionValue(options["project-name"]);
   if (projectId) {
     url.searchParams.set("projectId", projectId);
+  }
+  if (projectName) {
+    url.searchParams.set("projectName", projectName);
   }
 
   const response = await fetch(url);
   if (!response.ok) {
-    throw new Error("Project Board is not running. Open it to read the live snapshot.");
+    throw new Error("KanbanBridge is not running. Open it to read the live snapshot.");
   }
 
   console.log(JSON.stringify(await response.json(), null, 2));
@@ -109,8 +154,10 @@ async function createCard(args) {
   const title = options._.join(" ").trim() || optionValue(options.title);
 
   if (!title) {
-    throw new Error("Usage: agent-bridge card \"title\" [--column Backlog] [--description text]");
+    throw new Error("Usage: agent-bridge card \"title\" --project-id <id> [--column Backlog] [--description text]");
   }
+
+  requireProjectTarget(options, "create a card");
 
   const payload = {
     title,
@@ -118,6 +165,7 @@ async function createCard(args) {
     priority: optionValue(options.priority),
     dueDate: optionValue(options["due-date"]),
     projectId: optionValue(options["project-id"]),
+    projectName: optionValue(options["project-name"]),
     columnId: optionValue(options["column-id"]),
     columnName: optionValue(options.column) || optionValue(options["column-name"]),
     observationId: optionValue(options["observation-id"]),
@@ -193,8 +241,10 @@ async function moveCard(args) {
   const columnId = optionValue(options["column-id"]);
 
   if (!cardId || (!columnName && !columnId)) {
-    throw new Error("Usage: agent-bridge move-card <card-id> --column \"In Progress\"");
+    throw new Error("Usage: agent-bridge move-card <card-id> --project-id <id> --column \"In Progress\"");
   }
+
+  requireProjectTarget(options, "move a card");
 
   const response = await fetch(`${CONNECTOR_URL}/cards/${encodeURIComponent(cardId)}/move`, {
     method: "POST",
@@ -203,7 +253,8 @@ async function moveCard(args) {
       columnName,
       columnId,
       targetIndex: numberOption(options.index),
-      projectId: optionValue(options["project-id"])
+      projectId: optionValue(options["project-id"]),
+      projectName: optionValue(options["project-name"])
     }))
   });
 
@@ -279,15 +330,18 @@ async function tagCard(args) {
   const tagId = optionValue(options["tag-id"]);
 
   if (!cardId || (!name && !tagId)) {
-    throw new Error("Usage: agent-bridge tag-card <card-id> --name \"Obs: 6036d5d3\"");
+    throw new Error("Usage: agent-bridge tag-card <card-id> --project-id <id> --name \"Obs: 6036d5d3\"");
   }
+
+  requireProjectTarget(options, "tag a card");
 
   const payload = compact({
     name,
     tagId,
     color: optionValue(options.color),
     description: optionValue(options.description),
-    projectId: optionValue(options["project-id"])
+    projectId: optionValue(options["project-id"]),
+    projectName: optionValue(options["project-name"])
   });
 
   const response = await fetch(`${CONNECTOR_URL}/cards/${encodeURIComponent(cardId)}/tags`, {
@@ -310,13 +364,16 @@ async function untagCard(args) {
   const tagId = optionValue(options["tag-id"]);
 
   if (!cardId || (!name && !tagId)) {
-    throw new Error("Usage: agent-bridge untag-card <card-id> --name Observation");
+    throw new Error("Usage: agent-bridge untag-card <card-id> --project-id <id> --name Observation");
   }
+
+  requireProjectTarget(options, "remove a tag from a card");
 
   const payload = compact({
     name,
     tagId,
-    projectId: optionValue(options["project-id"])
+    projectId: optionValue(options["project-id"]),
+    projectName: optionValue(options["project-name"])
   });
 
   const response = await fetch(`${CONNECTOR_URL}/cards/${encodeURIComponent(cardId)}/tags/remove`, {
@@ -343,7 +400,7 @@ async function archive(args) {
   });
 
   if (!response.ok) {
-    throw new Error("Project Board is not running. Open it to archive observations.");
+    throw new Error("KanbanBridge is not running. Open it to archive observations.");
   }
 
   console.log(JSON.stringify(await response.json(), null, 2));
@@ -422,6 +479,14 @@ function splitList(value, separator) {
     .filter(Boolean);
 }
 
+function requireProjectTarget(options, action) {
+  if (!optionValue(options["project-id"]) && !optionValue(options["project-name"])) {
+    throw new Error(
+      `Refusing to ${action} without an explicit project target. Use --project-id <id> or --project-name "Project board". Run "node scripts/agent-bridge.mjs projects" to list projects.`
+    );
+  }
+}
+
 function compact(input) {
   return Object.fromEntries(
     Object.entries(input).filter(([, value]) => {
@@ -434,34 +499,38 @@ function compact(input) {
 }
 
 function help() {
-  console.log(`Project Board agent bridge
+  console.log(`KanbanBridge agent bridge
 
 Commands:
-  observe "text" [--source codex] [--project-id id] [--workspace-id id] [--project-path C:\\path] [--kind observation]
-  list [--limit 20]
-  snapshot [--project-id id]
-  card "title" [--column Backlog] [--description text] [--priority High] [--observation-id id] [--checklist "one|two"]
+  projects
+  observe "text" [--source codex] [--project-id id] [--project-name name] [--workspace-id id] [--project-path C:\\path] [--kind observation]
+  update-observation <observation-id> "updated text"
+  list [--limit 20] [--project-id id] [--project-name name]
+  snapshot [--project-id id] [--project-name name]
+  card "title" --project-id id [--column Backlog] [--description text] [--priority High] [--observation-id id] [--checklist "one|two"]
   update-card <card-id> [--title text] [--description text] [--priority High] [--due-date YYYY-MM-DD]
   checklist <card-id> "checklist item text"
   link-observation <card-id> <observation-id>
   unlink-observation <card-id> <observation-id>
-  tag-card <card-id> --name "Obs: 6036d5d3"
-  untag-card <card-id> --name Observation
-  move-card <card-id> --column "In Progress" [--index 0]
+  tag-card <card-id> --project-id id --name "Obs: 6036d5d3"
+  untag-card <card-id> --project-id id --name Observation
+  move-card <card-id> --project-id id --column "In Progress" [--index 0]
   archive-card <card-id>
   archive <observation-id>
 
 Examples:
+  node scripts/agent-bridge.mjs projects
   node scripts/agent-bridge.mjs observe "The card modal should remember its last tab." --source codex --project-id 0e33a86f-7126-488f-9d2a-0aaaffbc6d79
+  node scripts/agent-bridge.mjs update-observation 6036d5d3-e1a8-4ca7-bb63-124c1e84e83c "Column plus button should open the card modal."
   node scripts/agent-bridge.mjs observe "Drag feels better now." --source claude-code --project-path "C:\\repo"
-  node scripts/agent-bridge.mjs card "Link observations to cards" --column Backlog --priority High --observation-id 5bd9c675-06b9-4973-8c51-76ec605ddba7 --checklist "Design relation|Render linked notes"
+  node scripts/agent-bridge.mjs card "Link observations to cards" --project-id 0e33a86f-7126-488f-9d2a-0aaaffbc6d79 --column Backlog --priority High --observation-id 5bd9c675-06b9-4973-8c51-76ec605ddba7 --checklist "Design relation|Render linked notes"
   node scripts/agent-bridge.mjs update-card 15bcece6-fddc-4a6b-9c5a-b57b2c6807ac --priority High
   node scripts/agent-bridge.mjs link-observation 15bcece6-fddc-4a6b-9c5a-b57b2c6807ac 6036d5d3-e1a8-4ca7-bb63-124c1e84e83c
-  node scripts/agent-bridge.mjs tag-card 15bcece6-fddc-4a6b-9c5a-b57b2c6807ac --name "Obs: 6036d5d3"
-  node scripts/agent-bridge.mjs move-card 15bcece6-fddc-4a6b-9c5a-b57b2c6807ac --column "In Progress"
-  node scripts/agent-bridge.mjs list --limit 10
+  node scripts/agent-bridge.mjs tag-card 15bcece6-fddc-4a6b-9c5a-b57b2c6807ac --project-id 0e33a86f-7126-488f-9d2a-0aaaffbc6d79 --name "Obs: 6036d5d3"
+  node scripts/agent-bridge.mjs move-card 15bcece6-fddc-4a6b-9c5a-b57b2c6807ac --project-id 0e33a86f-7126-488f-9d2a-0aaaffbc6d79 --column "In Progress"
+  node scripts/agent-bridge.mjs list --project-id 0e33a86f-7126-488f-9d2a-0aaaffbc6d79 --limit 10
   node scripts/agent-bridge.mjs archive 2aab4bdd-423c-449d-aed8-622df00b9252
 
-If Project Board is open, connector changes are sent through http://127.0.0.1:38731 and the window refreshes live.
+If KanbanBridge is open, connector changes are sent through http://127.0.0.1:38731 and the window refreshes live.
 If it is closed, observations are queued in ${INBOX_PATH} and imported on next app launch.`);
 }

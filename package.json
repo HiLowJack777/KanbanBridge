@@ -1,9 +1,10 @@
 {
-  "name": "atlassian-substitute",
+  "name": "kanban-bridge",
   "version": "0.1.0",
   "private": true,
-  "productName": "Project Board",
-  "description": "Offline-first local desktop project board app.",
+  "productName": "KanbanBridge",
+  "description": "Offline-first Kanban board with a local agent connector.",
+  "license": "MIT",
   "main": "dist/electron/main/main.js",
   "scripts": {
     "dev": "concurrently -k \"pnpm run dev:main\" \"pnpm run dev:renderer\" \"pnpm run dev:electron\"",
@@ -56,8 +57,8 @@
     "wait-on": "^8.0.1"
   },
   "build": {
-    "appId": "com.local.projectboard",
-    "productName": "Project Board",
+    "appId": "com.local.kanbanbridge",
+    "productName": "KanbanBridge",
     "asar": false,
     "directories": {
       "output": "desktop-release"
@@ -89,7 +90,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Project Board"
+      "shortcutName": "KanbanBridge"
     }
   }
 }

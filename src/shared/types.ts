@@ -82,6 +82,10 @@ export interface ProjectDocument {
   projectId: string;
   title: string;
   body: string;
+  filePath: string;
+  fileUrl: string;
+  originalPath: string;
+  mimeType: string;
   archivedAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -138,9 +142,14 @@ export interface CreateObservationInput {
   body: string;
   workspaceId?: string;
   projectId?: string;
+  projectName?: string;
   source?: string;
   projectPath?: string;
   kind?: string;
+}
+
+export interface UpdateObservationInput {
+  body?: string;
 }
 
 export interface Card {
@@ -266,6 +275,7 @@ export interface ProjectBoardApi {
   getSnapshot(projectId?: string): Promise<AppSnapshot>;
   onExternalChange(callback: () => void): () => void;
   createObservation(input: CreateObservationInput): Promise<Observation>;
+  updateObservation(observationId: string, patch: UpdateObservationInput): Promise<Observation>;
   archiveObservation(observationId: string): Promise<void>;
   createProject(input: CreateProjectInput): Promise<Project>;
   updateProject(projectId: string, patch: UpdateProjectInput): Promise<Project>;
@@ -286,6 +296,8 @@ export interface ProjectBoardApi {
   createProjectDocument(projectId: string, input: CreateProjectDocumentInput): Promise<ProjectDocument>;
   updateProjectDocument(documentId: string, patch: UpdateProjectDocumentInput): Promise<ProjectDocument>;
   archiveProjectDocument(documentId: string): Promise<void>;
+  importProjectDocument(projectId: string): Promise<ProjectDocument | null>;
+  openProjectDocument(documentId: string): Promise<void>;
   importDesignAsset(projectId: string): Promise<DesignAsset | null>;
   updateDesignAsset(assetId: string, patch: UpdateDesignAssetInput): Promise<DesignAsset>;
   archiveDesignAsset(assetId: string): Promise<void>;

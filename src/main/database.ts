@@ -194,6 +194,9 @@ export class LocalDatabase {
         project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
         title TEXT NOT NULL,
         body TEXT,
+        file_path TEXT,
+        original_path TEXT,
+        mime_type TEXT,
         archived_at TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
@@ -322,6 +325,9 @@ export class LocalDatabase {
     this.ensureColumn("observations", "source", "source TEXT");
     this.ensureColumn("observations", "project_path", "project_path TEXT");
     this.ensureColumn("observations", "kind", "kind TEXT NOT NULL DEFAULT 'observation'");
+    this.ensureColumn("project_documents", "file_path", "file_path TEXT");
+    this.ensureColumn("project_documents", "original_path", "original_path TEXT");
+    this.ensureColumn("project_documents", "mime_type", "mime_type TEXT");
     this.db.run(`
       CREATE INDEX IF NOT EXISTS idx_observations_workspace ON observations(workspace_id, created_at);
       CREATE INDEX IF NOT EXISTS idx_observations_project ON observations(project_id, created_at);

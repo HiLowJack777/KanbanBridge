@@ -6,7 +6,8 @@ import type {
   CreateObservationInput,
   Priority,
   Tag,
-  UpdateCardInput
+  UpdateCardInput,
+  UpdateObservationInput
 } from "../shared/types";
 import type { ProjectBoardService } from "./services";
 
@@ -17,6 +18,7 @@ type ChangeNotifier = () => void;
 
 type ConnectorCardInput = CreateCardInput & {
   projectId?: string;
+  projectName?: string;
   columnId?: string;
   columnName?: string;
   tags?: string[];
@@ -30,6 +32,7 @@ type ChecklistInput = {
 
 type MoveCardInput = {
   projectId?: string;
+  projectName?: string;
   columnId?: string;
   columnName?: string;
   targetIndex?: number;
@@ -45,6 +48,12 @@ type TagInput = {
   color?: string;
   description?: string;
   projectId?: string;
+  projectName?: string;
+};
+
+type ProjectTargetInput = {
+  projectId?: string | null;
+  projectName?: string | null;
 };
 
 export function startAgentConnector(getService: ServiceGetter, notifyChange: ChangeNotifier): void {
@@ -62,31 +71,67 @@ export function startAgentConnector(getService: ServiceGetter, notifyChange: Cha
       }
 
       if (request.method === "GET" && url.pathname === "/health") {
-        sendJson(response, 200, { ok: true, app: "Project Board" });
+        sendJson(response, 200, { ok: true, app: "KanbanBridge" });
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/projects") {
+        const snapshot = await (await getService()).getSnapshot();
+        sendJson(response, 200, {
+          projects: snapshot.projects,
+          defaultProjectId: snapshot.activeProjectId
+        });
         return;
       }
 
       if (request.method === "GET" && url.pathname === "/snapshot") {
-        const snapshot = await (await getService()).getSnapshot(url.searchParams.get("projectId") ?? undefined);
+        const service = await getService();
+        const projectId = await resolveOptionalProjectTarget(service, {
+          projectId: url.searchParams.get("projectId"),
+          projectName: url.searchParams.get("projectName")
+        });
+        const snapshot = await service.getSnapshot(projectId);
         sendJson(response, 200, snapshot);
         return;
       }
 
       if (request.method === "GET" && url.pathname === "/observations") {
-        const snapshot = await (await getService()).getSnapshot(url.searchParams.get("projectId") ?? undefined);
+        const service = await getService();
+        const projectId = await resolveOptionalProjectTarget(service, {
+          projectId: url.searchParams.get("projectId"),
+          projectName: url.searchParams.get("projectName")
+        });
+        const snapshot = await service.getSnapshot(projectId);
         sendJson(response, 200, { observations: snapshot.observations });
         return;
       }
 
       if (request.method === "POST" && url.pathname === "/observations") {
-        const input = await readJson<CreateObservationInput>(request);
-        const observation = await (await getService()).createObservation({
+        const input = await readJson<CreateObservationInput & { projectName?: string }>(request);
+        const service = await getService();
+        const projectId = await resolveOptionalProjectTarget(service, {
+          projectId: input.projectId ?? url.searchParams.get("projectId"),
+          projectName: input.projectName ?? url.searchParams.get("projectName")
+        });
+        const observation = await service.createObservation({
           ...input,
-          projectId: input.projectId ?? url.searchParams.get("projectId") ?? undefined,
+          projectId,
           workspaceId: input.workspaceId ?? url.searchParams.get("workspaceId") ?? undefined
         });
         notifyChange();
         sendJson(response, 201, { observation });
+        return;
+      }
+
+      const observationMatch = url.pathname.match(/^\/observations\/([^/]+)$/);
+      if (request.method === "PATCH" && observationMatch) {
+        const patch = await readJson<UpdateObservationInput>(request);
+        const observation = await (await getService()).updateObservation(
+          decodeURIComponent(observationMatch[1]),
+          patch
+        );
+        notifyChange();
+        sendJson(response, 200, { observation });
         return;
       }
 
@@ -200,6 +245,64 @@ export function startAgentConnector(getService: ServiceGetter, notifyChange: Cha
   });
 }
 
+async function resolveOptionalProjectTarget(
+  service: ProjectBoardService,
+  input: ProjectTargetInput
+): Promise<string | undefined> {
+  if (!input.projectId?.trim() && !input.projectName?.trim()) {
+    return undefined;
+  }
+  return resolveProjectTarget(service, input);
+}
+
+async function resolveRequiredProjectTarget(
+  service: ProjectBoardService,
+  input: ProjectTargetInput,
+  action: string
+): Promise<string> {
+  if (!input.projectId?.trim() && !input.projectName?.trim()) {
+    throw new Error(`Refusing to ${action} without an explicit project target. ${projectTargetHelp()}`);
+  }
+  return resolveProjectTarget(service, input);
+}
+
+async function resolveProjectTarget(
+  service: ProjectBoardService,
+  input: ProjectTargetInput
+): Promise<string> {
+  const snapshot = await service.getSnapshot();
+  const projectId = input.projectId?.trim();
+  const projectName = input.projectName?.trim();
+
+  if (projectId) {
+    const project = snapshot.projects.find((item) => item.id === projectId);
+    if (!project) {
+      throw new Error(`Project "${projectId}" was not found. ${projectTargetHelp()}`);
+    }
+    if (projectName && project.name.toLowerCase() !== projectName.toLowerCase()) {
+      throw new Error(`Project id "${projectId}" is "${project.name}", not "${projectName}".`);
+    }
+    return project.id;
+  }
+
+  if (projectName) {
+    const matches = snapshot.projects.filter((item) => item.name.toLowerCase() === projectName.toLowerCase());
+    if (matches.length === 1) {
+      return matches[0].id;
+    }
+    if (matches.length > 1) {
+      throw new Error(`Project name "${projectName}" is ambiguous. Use --project-id instead.`);
+    }
+    throw new Error(`Project "${projectName}" was not found. ${projectTargetHelp()}`);
+  }
+
+  throw new Error(projectTargetHelp());
+}
+
+function projectTargetHelp(): string {
+  return 'Provide projectId or projectName. List projects with GET /projects or "node scripts/agent-bridge.mjs projects".';
+}
+
 async function createConnectorCard(
   service: ProjectBoardService,
   input: ConnectorCardInput
@@ -209,14 +312,11 @@ async function createConnectorCard(
     throw new Error("Card title is required.");
   }
 
-  const snapshot = await service.getSnapshot(input.projectId);
+  const projectId = await resolveRequiredProjectTarget(service, input, "create a card");
+  const snapshot = await service.getSnapshot(projectId);
   const board = snapshot.board;
   if (!board) {
     throw new Error("No active board is available.");
-  }
-
-  if (input.projectId && board.project.id !== input.projectId) {
-    throw new Error(`Project "${input.projectId}" was not found.`);
   }
 
   const column =
@@ -274,7 +374,8 @@ async function moveConnectorCard(
   cardId: string,
   input: MoveCardInput
 ): Promise<Card> {
-  const snapshot = await service.getSnapshot(input.projectId);
+  const projectId = await resolveRequiredProjectTarget(service, input, "move a card");
+  const snapshot = await service.getSnapshot(projectId);
   const board = snapshot.board;
   if (!board) {
     throw new Error("No active board is available.");
@@ -308,7 +409,8 @@ async function applyConnectorTag(
   cardId: string,
   input: TagInput
 ): Promise<Tag> {
-  const snapshot = await service.getSnapshot(input.projectId);
+  const projectId = await resolveRequiredProjectTarget(service, input, "tag a card");
+  const snapshot = await service.getSnapshot(projectId);
   const card = findCard(snapshot, cardId);
   if (!card) {
     throw new Error(`Card "${cardId}" was not found.`);
@@ -332,7 +434,8 @@ async function removeConnectorTag(
   cardId: string,
   input: TagInput
 ): Promise<void> {
-  const snapshot = await service.getSnapshot(input.projectId);
+  const projectId = await resolveRequiredProjectTarget(service, input, "remove a tag from a card");
+  const snapshot = await service.getSnapshot(projectId);
   const card = findCard(snapshot, cardId);
   if (!card) {
     throw new Error(`Card "${cardId}" was not found.`);

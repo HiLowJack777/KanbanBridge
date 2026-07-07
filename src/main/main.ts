@@ -13,6 +13,7 @@ import type {
   UpdateChecklistItemInput,
   UpdateColumnInput,
   UpdateDesignAssetInput,
+  UpdateObservationInput,
   UpdateProjectDocumentInput,
   UpdateProjectInput
 } from "../shared/types";
@@ -44,6 +45,10 @@ function registerIpc(): void {
 
   ipcMain.handle("observation:create", async (_event, input: CreateObservationInput) => {
     return (await getService()).createObservation(input);
+  });
+
+  ipcMain.handle("observation:update", async (_event, observationId: string, patch: UpdateObservationInput) => {
+    return (await getService()).updateObservation(observationId, patch);
   });
 
   ipcMain.handle("observation:archive", async (_event, observationId: string) => {
@@ -118,6 +123,14 @@ function registerIpc(): void {
     return (await getService()).archiveProjectDocument(documentId);
   });
 
+  ipcMain.handle("document:import", async (_event, projectId: string) => {
+    return (await getService()).importProjectDocument(projectId);
+  });
+
+  ipcMain.handle("document:open", async (_event, documentId: string) => {
+    return (await getService()).openProjectDocument(documentId);
+  });
+
   ipcMain.handle("designAsset:import", async (_event, projectId: string) => {
     return (await getService()).importDesignAsset(projectId);
   });
@@ -169,7 +182,7 @@ async function createWindow(): Promise<void> {
     height: 920,
     minWidth: 1080,
     minHeight: 720,
-    title: "Project Board",
+    title: "KanbanBridge",
     backgroundColor: "#f6f7f8",
     webPreferences: {
       preload: path.join(__dirname, "..", "preload.js"),
@@ -187,7 +200,7 @@ async function createWindow(): Promise<void> {
   }
 }
 
-app.setName("Project Board");
+app.setName("KanbanBridge");
 
 app.whenReady().then(async () => {
   await getService();
