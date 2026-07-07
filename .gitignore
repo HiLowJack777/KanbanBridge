@@ -1,0 +1,9 @@
+node_modules/
+dist/
+dist-electron/
+release/
+desktop-release/
+.vite/
+coverage/
+*.log
+tmp/
