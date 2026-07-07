@@ -5,6 +5,7 @@ import { ProjectBoardService } from "./services";
 import type {
   CreateCardInput,
   CreateColumnInput,
+  CreateObservationInput,
   CreateProjectInput,
   CreateTagInput,
   UpdateCardInput,
@@ -12,6 +13,7 @@ import type {
   UpdateColumnInput,
   UpdateProjectInput
 } from "../shared/types";
+import { startAgentConnector } from "./agentConnector";
 
 let mainWindow: BrowserWindow | null = null;
 let servicePromise: Promise<ProjectBoardService> | null = null;
@@ -24,9 +26,25 @@ function getService(): Promise<ProjectBoardService> {
   return servicePromise;
 }
 
+function notifyExternalChange(): void {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) {
+      window.webContents.send("app:external-change");
+    }
+  }
+}
+
 function registerIpc(): void {
   ipcMain.handle("app:getSnapshot", async (_event, projectId?: string) => {
     return (await getService()).getSnapshot(projectId);
+  });
+
+  ipcMain.handle("observation:create", async (_event, input: CreateObservationInput) => {
+    return (await getService()).createObservation(input);
+  });
+
+  ipcMain.handle("observation:archive", async (_event, observationId: string) => {
+    return (await getService()).archiveObservation(observationId);
   });
 
   ipcMain.handle("project:create", async (_event, input: CreateProjectInput) => {
@@ -85,6 +103,14 @@ function registerIpc(): void {
     return (await getService()).removeTag(cardId, tagId);
   });
 
+  ipcMain.handle("observation:linkCard", async (_event, cardId: string, observationId: string) => {
+    return (await getService()).linkObservationToCard(cardId, observationId);
+  });
+
+  ipcMain.handle("observation:unlinkCard", async (_event, cardId: string, observationId: string) => {
+    return (await getService()).unlinkObservationFromCard(cardId, observationId);
+  });
+
   ipcMain.handle("checklist:add", async (_event, cardId: string, text: string) => {
     return (await getService()).addChecklistItem(cardId, text);
   });
@@ -139,6 +165,7 @@ app.setName("Project Board");
 app.whenReady().then(async () => {
   await getService();
   registerIpc();
+  startAgentConnector(getService, notifyExternalChange);
   await createWindow();
 
   app.on("activate", () => {
@@ -153,4 +180,3 @@ app.on("window-all-closed", () => {
     app.quit();
   }
 });
-

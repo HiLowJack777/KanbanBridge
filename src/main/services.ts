@@ -1,5 +1,6 @@
 import { shell } from "electron";
 import { randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
 import type {
   ActivityEvent,
   AppSnapshot,
@@ -13,8 +14,10 @@ import type {
   ChecklistItem,
   CreateCardInput,
   CreateColumnInput,
+  CreateObservationInput,
   CreateProjectInput,
   CreateTagInput,
+  Observation,
   Priority,
   Project,
   Tag,
@@ -105,6 +108,7 @@ export class ProjectBoardService {
   constructor(private readonly database: LocalDatabase) {}
 
   async getSnapshot(projectId?: string): Promise<AppSnapshot> {
+    await this.ingestAgentInbox();
     await this.ensureStarterProject();
 
     const workspace = this.getWorkspace();
@@ -121,8 +125,48 @@ export class ProjectBoardService {
       board: activeProjectId ? this.getBoard(activeProjectId) : null,
       dataLocation: this.database.dataPath,
       backupLocation: this.database.backupDir,
-      templates: BOARD_TEMPLATES
+      templates: BOARD_TEMPLATES,
+      observations: this.listObservations()
     };
+  }
+
+  async createObservation(input: CreateObservationInput): Promise<Observation> {
+    return this.database.write(() => {
+      const cleaned = input.body.trim();
+      if (!cleaned) {
+        throw new Error("Observation is required.");
+      }
+
+      const id = randomUUID();
+      const timestamp = now();
+      this.database.run(
+        `
+          INSERT INTO observations (
+            id, body, source, project_path, kind, archived_at, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?)
+        `,
+        [
+          id,
+          cleaned,
+          input.source?.trim() || "Project Board",
+          input.projectPath?.trim() || "",
+          input.kind?.trim() || "observation",
+          timestamp,
+          timestamp
+        ]
+      );
+      return this.requireObservation(id);
+    });
+  }
+
+  async archiveObservation(observationId: string): Promise<void> {
+    await this.database.write(() => {
+      const timestamp = now();
+      this.database.run(
+        "UPDATE observations SET archived_at = ?, updated_at = ? WHERE id = ?",
+        [timestamp, timestamp, observationId]
+      );
+    });
   }
 
   async createProject(input: CreateProjectInput): Promise<Project> {
@@ -423,6 +467,30 @@ export class ProjectBoardService {
     });
   }
 
+  async linkObservationToCard(cardId: string, observationId: string): Promise<void> {
+    await this.database.write(() => {
+      const card = this.requireCard(cardId);
+      const observation = this.requireObservation(observationId);
+      this.database.run(
+        "INSERT OR IGNORE INTO card_observations (card_id, observation_id, created_at) VALUES (?, ?, ?)",
+        [cardId, observationId, now()]
+      );
+      this.recordActivity(card.projectId, card.id, "observation.linked", `Observation linked: ${observation.body}`);
+    });
+  }
+
+  async unlinkObservationFromCard(cardId: string, observationId: string): Promise<void> {
+    await this.database.write(() => {
+      const card = this.requireCard(cardId);
+      const observation = this.requireObservation(observationId);
+      this.database.run("DELETE FROM card_observations WHERE card_id = ? AND observation_id = ?", [
+        cardId,
+        observationId
+      ]);
+      this.recordActivity(card.projectId, card.id, "observation.unlinked", `Observation unlinked: ${observation.body}`);
+    });
+  }
+
   async addChecklistItem(cardId: string, text: string): Promise<ChecklistItem> {
     return this.database.write(() => this.addChecklistItemSync(cardId, text));
   }
@@ -471,6 +539,54 @@ export class ProjectBoardService {
 
   async openDataFolder(): Promise<void> {
     await shell.openPath(this.database.dataDir);
+  }
+
+  private async ingestAgentInbox(): Promise<void> {
+    let raw = "";
+
+    try {
+      raw = await fs.readFile(this.database.agentInboxPath, "utf-8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return;
+      }
+      throw error;
+    }
+
+    const inputs = raw
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as CreateObservationInput)
+      .filter((input) => input.body?.trim());
+
+    if (!inputs.length) {
+      await fs.writeFile(this.database.agentInboxPath, "", "utf-8");
+      return;
+    }
+
+    await this.database.write(() => {
+      for (const input of inputs) {
+        const timestamp = now();
+        this.database.run(
+          `
+            INSERT INTO observations (
+              id, body, source, project_path, kind, archived_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?)
+          `,
+          [
+            randomUUID(),
+            input.body.trim(),
+            input.source?.trim() || "Agent",
+            input.projectPath?.trim() || "",
+            input.kind?.trim() || "observation",
+            timestamp,
+            timestamp
+          ]
+        );
+      }
+    });
+    await fs.writeFile(this.database.agentInboxPath, "", "utf-8");
   }
 
   private async ensureStarterProject(): Promise<void> {
@@ -763,6 +879,14 @@ export class ProjectBoardService {
       .map((row) => this.mapProject(row));
   }
 
+  private listObservations(): Observation[] {
+    return this.database
+      .all<Row>(
+        "SELECT * FROM observations WHERE archived_at IS NULL ORDER BY created_at DESC"
+      )
+      .map((row) => this.mapObservation(row));
+  }
+
   private getBoard(projectId: string): BoardState {
     const project = this.requireProject(projectId);
     const board = this.requireDefaultBoard(projectId);
@@ -912,6 +1036,14 @@ export class ProjectBoardService {
     return this.mapComment(row);
   }
 
+  private requireObservation(observationId: string): Observation {
+    const row = this.database.get<Row>("SELECT * FROM observations WHERE id = ?", [observationId]);
+    if (!row) {
+      throw new Error("Observation was not found.");
+    }
+    return this.mapObservation(row);
+  }
+
   private mapProject(row: Row): Project {
     return {
       id: asString(row.id),
@@ -968,6 +1100,18 @@ export class ProjectBoardService {
         [id]
       )
       .map((tagRow) => this.mapTag(tagRow));
+    const observations = this.database
+      .all<Row>(
+        `
+          SELECT o.*
+          FROM observations o
+          INNER JOIN card_observations co ON co.observation_id = o.id
+          WHERE co.card_id = ? AND o.archived_at IS NULL
+          ORDER BY co.created_at ASC
+        `,
+        [id]
+      )
+      .map((observationRow) => this.mapObservation(observationRow));
     const checklist = this.database
       .all<Row>(
         "SELECT * FROM checklist_items WHERE card_id = ? ORDER BY position ASC",
@@ -1001,6 +1145,7 @@ export class ProjectBoardService {
       createdAt: asString(row.created_at),
       updatedAt: asString(row.updated_at),
       tags,
+      observations,
       checklist,
       comments,
       activity
@@ -1054,5 +1199,17 @@ export class ProjectBoardService {
       createdAt: asString(row.created_at)
     };
   }
-}
 
+  private mapObservation(row: Row): Observation {
+    return {
+      id: asString(row.id),
+      body: asString(row.body),
+      source: asString(row.source, "Project Board"),
+      projectPath: asString(row.project_path),
+      kind: asString(row.kind, "observation"),
+      archivedAt: asNullableString(row.archived_at),
+      createdAt: asString(row.created_at),
+      updatedAt: asString(row.updated_at)
+    };
+  }
+}

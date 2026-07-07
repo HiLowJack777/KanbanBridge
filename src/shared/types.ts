@@ -77,6 +77,24 @@ export interface ActivityEvent {
   createdAt: string;
 }
 
+export interface Observation {
+  id: string;
+  body: string;
+  source: string;
+  projectPath: string;
+  kind: string;
+  archivedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateObservationInput {
+  body: string;
+  source?: string;
+  projectPath?: string;
+  kind?: string;
+}
+
 export interface Card {
   id: string;
   projectId: string;
@@ -91,6 +109,7 @@ export interface Card {
   createdAt: string;
   updatedAt: string;
   tags: Tag[];
+  observations: Observation[];
   checklist: ChecklistItem[];
   comments: CardComment[];
   activity: ActivityEvent[];
@@ -126,6 +145,7 @@ export interface AppSnapshot {
   dataLocation: string;
   backupLocation: string;
   templates: BoardTemplate[];
+  observations: Observation[];
 }
 
 export interface BoardTemplate {
@@ -194,6 +214,9 @@ export interface BackupResult {
 
 export interface ProjectBoardApi {
   getSnapshot(projectId?: string): Promise<AppSnapshot>;
+  onExternalChange(callback: () => void): () => void;
+  createObservation(input: CreateObservationInput): Promise<Observation>;
+  archiveObservation(observationId: string): Promise<void>;
   createProject(input: CreateProjectInput): Promise<Project>;
   updateProject(projectId: string, patch: UpdateProjectInput): Promise<Project>;
   archiveProject(projectId: string): Promise<void>;
@@ -208,6 +231,8 @@ export interface ProjectBoardApi {
   createTag(projectId: string, input: CreateTagInput): Promise<Tag>;
   applyTag(cardId: string, tagId: string): Promise<void>;
   removeTag(cardId: string, tagId: string): Promise<void>;
+  linkObservationToCard(cardId: string, observationId: string): Promise<void>;
+  unlinkObservationFromCard(cardId: string, observationId: string): Promise<void>;
   addChecklistItem(cardId: string, text: string): Promise<ChecklistItem>;
   updateChecklistItem(itemId: string, patch: UpdateChecklistItemInput): Promise<ChecklistItem>;
   deleteChecklistItem(itemId: string): Promise<void>;
@@ -215,4 +240,3 @@ export interface ProjectBoardApi {
   createBackup(): Promise<BackupResult>;
   openDataFolder(): Promise<void>;
 }
-

@@ -1,11 +1,15 @@
 import {
   DndContext,
+  DragOverlay,
+  MeasuringStrategy,
   PointerSensor,
   closestCorners,
   useDroppable,
   useSensor,
   useSensors,
-  type DragEndEvent
+  type DragEndEvent,
+  type DragOverEvent,
+  type DragStartEvent
 } from "@dnd-kit/core";
 import {
   SortableContext,
@@ -16,28 +20,33 @@ import { CSS } from "@dnd-kit/utilities";
 import {
   Archive,
   Calendar,
+  ChevronDown,
+  ChevronRight,
   CheckCircle2,
   Circle,
   Copy,
   DatabaseBackup,
   FolderOpen,
   GripVertical,
+  Link2,
   MessageSquare,
   Plus,
   Search,
   Settings,
-  Tags,
   Trash2,
   X
 } from "lucide-react";
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type {
   AppSnapshot,
   BoardColumn,
   BoardTemplate,
   Card,
+  CreateCardInput,
   CreateProjectInput,
+  Observation,
   Priority,
+  Project,
   Tag,
   TemplateId
 } from "../shared/types";
@@ -57,7 +66,11 @@ function App() {
   const [dueFilter, setDueFilter] = useState<DueFilter>("all");
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [showObservations, setShowObservations] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [newCardColumnId, setNewCardColumnId] = useState<string | null>(null);
+  const [newCardObservation, setNewCardObservation] = useState<Observation | null>(null);
+  const [archiveProjectTarget, setArchiveProjectTarget] = useState<Project | null>(null);
 
   const reload = useCallback(async (projectId?: string) => {
     try {
@@ -74,12 +87,24 @@ function App() {
     void reload();
   }, [reload]);
 
+  useEffect(() => {
+    return window.projectBoard.onExternalChange(() => {
+      void reload(selectedProjectId);
+    });
+  }, [reload, selectedProjectId]);
+
   const board = snapshot?.board ?? null;
   const allCards = useMemo(() => {
     return board?.columns.flatMap((column) => column.cards) ?? [];
   }, [board]);
 
   const selectedCard = allCards.find((card) => card.id === selectedCardId) ?? null;
+  const newCardColumn =
+    board?.columns.find((column) => column.id === newCardColumnId) ?? null;
+  const defaultNewCardColumnId =
+    board?.columns.find((column) => column.name.toLowerCase() === "backlog")?.id ??
+    board?.columns[0]?.id ??
+    null;
 
   useEffect(() => {
     if (selectedCardId && !allCards.some((card) => card.id === selectedCardId)) {
@@ -116,8 +141,20 @@ function App() {
 
   async function selectProject(projectId: string) {
     setSelectedCardId(null);
+    setNewCardColumnId(null);
+    setNewCardObservation(null);
     setSelectedProjectId(projectId);
     await reload(projectId);
+  }
+
+  function openNewCard(columnId: string, observation: Observation | null = null) {
+    setNewCardObservation(observation);
+    setNewCardColumnId(columnId);
+  }
+
+  function closeNewCard() {
+    setNewCardColumnId(null);
+    setNewCardObservation(null);
   }
 
   if (!snapshot || !board) {
@@ -137,6 +174,7 @@ function App() {
         snapshot={snapshot}
         selectedProjectId={selectedProjectId}
         onSelectProject={(projectId) => void selectProject(projectId)}
+        onRequestArchiveProject={setArchiveProjectTarget}
         onCreateProject={(input) =>
           runMutation(async () => {
             const project = await window.projectBoard.createProject(input);
@@ -165,6 +203,7 @@ function App() {
               setNotice(`Backup created: ${result.path}`);
             })
           }
+          onOpenObservations={() => setShowObservations(true)}
           onOpenSettings={() => setShowSettings(true)}
         />
 
@@ -189,16 +228,11 @@ function App() {
         <BoardCanvas
           columns={filteredColumns}
           selectedCardId={selectedCardId}
-          onSelectCard={setSelectedCardId}
+          onOpenCard={setSelectedCardId}
           onMoveCard={(cardId, targetColumnId, targetIndex) =>
             runMutation(() => window.projectBoard.moveCard(cardId, targetColumnId, targetIndex))
           }
-          onCreateCard={(columnId, title) =>
-            runMutation(
-              () => window.projectBoard.createCard(columnId, { title }),
-              "Card created"
-            )
-          }
+          onRequestCreateCard={(columnId) => openNewCard(columnId)}
           onCreateColumn={(name) =>
             runMutation(
               () => window.projectBoard.createColumn(board.board.id, { name }),
@@ -223,48 +257,205 @@ function App() {
         />
       </section>
 
+      {newCardColumn ? (
+        <ModalDialog ariaLabel="Create card" onClose={closeNewCard}>
+          <NewCardPanel
+            column={newCardColumn}
+            tags={board.tags}
+            sourceObservation={newCardObservation}
+            onClose={closeNewCard}
+            onCreateCard={(input, tagIds, observationId) =>
+              runMutation(async () => {
+                const card = await window.projectBoard.createCard(newCardColumn.id, input);
+                for (const tagId of tagIds) {
+                  await window.projectBoard.applyTag(card.id, tagId);
+                }
+                if (observationId) {
+                  await window.projectBoard.linkObservationToCard(card.id, observationId);
+                }
+                closeNewCard();
+              }, "Card created")
+            }
+          />
+        </ModalDialog>
+      ) : null}
+
+      {selectedCard ? (
+        <ModalDialog ariaLabel="Card details" onClose={() => setSelectedCardId(null)}>
+          <DetailPanel
+            card={selectedCard}
+            tags={board.tags}
+            observations={snapshot.observations}
+            onClose={() => setSelectedCardId(null)}
+            onUpdateCard={(cardId, patch) =>
+              runMutation(() => window.projectBoard.updateCard(cardId, patch))
+            }
+            onCreateTag={(name, color) =>
+              runMutation(
+                () => window.projectBoard.createTag(board.project.id, { name, color }),
+                "Tag created"
+              )
+            }
+            onApplyTag={(cardId, tagId) =>
+              runMutation(() => window.projectBoard.applyTag(cardId, tagId))
+            }
+            onRemoveTag={(cardId, tagId) =>
+              runMutation(() => window.projectBoard.removeTag(cardId, tagId))
+            }
+            onLinkObservation={(cardId, observationId) =>
+              runMutation(() => window.projectBoard.linkObservationToCard(cardId, observationId))
+            }
+            onUnlinkObservation={(cardId, observationId) =>
+              runMutation(() => window.projectBoard.unlinkObservationFromCard(cardId, observationId))
+            }
+            onAddChecklistItem={(cardId, text) =>
+              runMutation(() => window.projectBoard.addChecklistItem(cardId, text))
+            }
+            onUpdateChecklistItem={(itemId, patch) =>
+              runMutation(() => window.projectBoard.updateChecklistItem(itemId, patch))
+            }
+            onDeleteChecklistItem={(itemId) =>
+              runMutation(() => window.projectBoard.deleteChecklistItem(itemId))
+            }
+            onAddComment={(cardId, body) =>
+              runMutation(() => window.projectBoard.addComment(cardId, body))
+            }
+          />
+        </ModalDialog>
+      ) : null}
+
+      {showObservations ? (
+        <ModalDialog ariaLabel="Observations" onClose={() => setShowObservations(false)}>
+          <ObservationsPanel
+            observations={snapshot.observations}
+            onClose={() => setShowObservations(false)}
+            onCreateObservation={(body) =>
+              runMutation(
+                () => window.projectBoard.createObservation({ body, source: "Project Board" }),
+                "Observation added"
+              )
+            }
+            onArchiveObservation={(observationId) =>
+              runMutation(
+                () => window.projectBoard.archiveObservation(observationId),
+                "Observation archived"
+              )
+            }
+            onCreateCardFromObservation={(observation) => {
+              if (defaultNewCardColumnId) {
+                openNewCard(defaultNewCardColumnId, observation);
+              }
+            }}
+          />
+        </ModalDialog>
+      ) : null}
+
       {showSettings ? (
-        <SettingsPanel
-          dataLocation={snapshot.dataLocation}
-          backupLocation={snapshot.backupLocation}
-          onClose={() => setShowSettings(false)}
-          onOpenDataFolder={() => runMutation(() => window.projectBoard.openDataFolder())}
-        />
-      ) : (
-        <DetailPanel
-          card={selectedCard}
-          tags={board.tags}
-          onClose={() => setSelectedCardId(null)}
-          onUpdateCard={(cardId, patch) =>
-            runMutation(() => window.projectBoard.updateCard(cardId, patch))
-          }
-          onCreateTag={(name, color) =>
-            runMutation(
-              () => window.projectBoard.createTag(board.project.id, { name, color }),
-              "Tag created"
-            )
-          }
-          onApplyTag={(cardId, tagId) =>
-            runMutation(() => window.projectBoard.applyTag(cardId, tagId))
-          }
-          onRemoveTag={(cardId, tagId) =>
-            runMutation(() => window.projectBoard.removeTag(cardId, tagId))
-          }
-          onAddChecklistItem={(cardId, text) =>
-            runMutation(() => window.projectBoard.addChecklistItem(cardId, text))
-          }
-          onUpdateChecklistItem={(itemId, patch) =>
-            runMutation(() => window.projectBoard.updateChecklistItem(itemId, patch))
-          }
-          onDeleteChecklistItem={(itemId) =>
-            runMutation(() => window.projectBoard.deleteChecklistItem(itemId))
-          }
-          onAddComment={(cardId, body) =>
-            runMutation(() => window.projectBoard.addComment(cardId, body))
-          }
-        />
-      )}
+        <ModalDialog ariaLabel="Settings" onClose={() => setShowSettings(false)}>
+          <SettingsPanel
+            dataLocation={snapshot.dataLocation}
+            backupLocation={snapshot.backupLocation}
+            onClose={() => setShowSettings(false)}
+            onOpenDataFolder={() => runMutation(() => window.projectBoard.openDataFolder())}
+          />
+        </ModalDialog>
+      ) : null}
+
+      {archiveProjectTarget ? (
+        <ModalDialog ariaLabel="Archive project" onClose={() => setArchiveProjectTarget(null)}>
+          <ArchiveProjectPanel
+            project={archiveProjectTarget}
+            onClose={() => setArchiveProjectTarget(null)}
+            onConfirm={() =>
+              runMutation(async () => {
+                await window.projectBoard.archiveProject(archiveProjectTarget.id);
+                setArchiveProjectTarget(null);
+                setSelectedProjectId(undefined);
+              }, "Project archived")
+            }
+          />
+        </ModalDialog>
+      ) : null}
     </main>
+  );
+}
+
+function ModalDialog({
+  ariaLabel,
+  children,
+  onClose
+}: {
+  ariaLabel: string;
+  children: ReactNode;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+
+  return (
+    <div className="modal-backdrop" onMouseDown={onClose}>
+      <section
+        className="modal-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label={ariaLabel}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        {children}
+      </section>
+    </div>
+  );
+}
+
+function ArchiveProjectPanel({
+  project,
+  onClose,
+  onConfirm
+}: {
+  project: Project;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <aside className="detail-panel archive-project-panel">
+      <header className="detail-header">
+        <div>
+          <p className="eyebrow">Archive project</p>
+          <h2>{project.name}</h2>
+        </div>
+        <button type="button" className="icon-button" onClick={onClose} aria-label="Close archive project">
+          <X size={18} />
+        </button>
+      </header>
+
+      <section className="detail-section">
+        <p className="archive-warning">
+          This removes the project from the sidebar and hides its boards, cards, tags, and activity from the active
+          workspace. Manual backups are not deleted.
+        </p>
+        <p className="archive-warning muted">
+          If this is the last active project, Project Board will create a fresh starter project so the workspace stays
+          usable.
+        </p>
+      </section>
+
+      <footer className="modal-actions">
+        <button type="button" className="secondary-button" onClick={onClose}>
+          Cancel
+        </button>
+        <button type="button" className="danger-button" onClick={onConfirm}>
+          Archive project
+        </button>
+      </footer>
+    </aside>
   );
 }
 
@@ -272,11 +463,13 @@ function Sidebar({
   snapshot,
   selectedProjectId,
   onSelectProject,
+  onRequestArchiveProject,
   onCreateProject
 }: {
   snapshot: AppSnapshot;
   selectedProjectId?: string;
   onSelectProject: (projectId: string) => void;
+  onRequestArchiveProject: (project: Project) => void;
   onCreateProject: (input: CreateProjectInput) => void;
 }) {
   const [isCreating, setIsCreating] = useState(false);
@@ -336,20 +529,29 @@ function Sidebar({
 
       <nav className="project-list" aria-label="Projects">
         {snapshot.projects.map((project) => (
-          <button
-            type="button"
+          <div
             key={project.id}
             className={project.id === selectedProjectId ? "project-row active" : "project-row"}
-            onClick={() => onSelectProject(project.id)}
           >
-            <span className="project-color" style={{ background: project.color }} />
-            <span>
-              <strong>{project.name}</strong>
-              <small>
-                {project.activeCardCount} active card{project.activeCardCount === 1 ? "" : "s"}
-              </small>
-            </span>
-          </button>
+            <button type="button" className="project-select" onClick={() => onSelectProject(project.id)}>
+              <span className="project-color" style={{ background: project.color }} />
+              <span>
+                <strong>{project.name}</strong>
+                <small>
+                  {project.activeCardCount} active card{project.activeCardCount === 1 ? "" : "s"}
+                </small>
+              </span>
+            </button>
+            <button
+              type="button"
+              className="icon-button quiet"
+              onClick={() => onRequestArchiveProject(project)}
+              aria-label={`Archive ${project.name}`}
+              title="Archive project"
+            >
+              <Archive size={15} />
+            </button>
+          </div>
         ))}
       </nav>
 
@@ -373,6 +575,7 @@ function TopBar({
   onTagChange,
   onDueChange,
   onBackup,
+  onOpenObservations,
   onOpenSettings
 }: {
   projectName: string;
@@ -387,6 +590,7 @@ function TopBar({
   onTagChange: (tagId: string) => void;
   onDueChange: (filter: DueFilter) => void;
   onBackup: () => void;
+  onOpenObservations: () => void;
   onOpenSettings: () => void;
 }) {
   return (
@@ -431,6 +635,10 @@ function TopBar({
           <option value="none">No due date</option>
         </select>
 
+        <button type="button" className="secondary-button" onClick={onOpenObservations}>
+          <MessageSquare size={16} />
+          Observations
+        </button>
         <button type="button" className="secondary-button" onClick={onBackup}>
           <DatabaseBackup size={16} />
           Backup
@@ -446,9 +654,9 @@ function TopBar({
 function BoardCanvas({
   columns,
   selectedCardId,
-  onSelectCard,
+  onOpenCard,
   onMoveCard,
-  onCreateCard,
+  onRequestCreateCard,
   onCreateColumn,
   onUpdateColumn,
   onArchiveColumn,
@@ -457,9 +665,9 @@ function BoardCanvas({
 }: {
   columns: BoardColumn[];
   selectedCardId: string | null;
-  onSelectCard: (cardId: string) => void;
+  onOpenCard: (cardId: string) => void;
   onMoveCard: (cardId: string, targetColumnId: string, targetIndex: number) => void;
-  onCreateCard: (columnId: string, title: string) => void;
+  onRequestCreateCard: (columnId: string) => void;
   onCreateColumn: (name: string) => void;
   onUpdateColumn: (columnId: string, patch: { name?: string; collapsed?: boolean }) => void;
   onArchiveColumn: (columnId: string) => void;
@@ -471,41 +679,69 @@ function BoardCanvas({
       activationConstraint: { distance: 6 }
     })
   );
+  const [dragColumns, setDragColumns] = useState(columns);
+  const [activeCardId, setActiveCardId] = useState<string | null>(null);
   const [newColumnName, setNewColumnName] = useState("");
+  const activeCard =
+    activeCardId ?
+      findCardLocation(dragColumns, activeCardId)?.card ??
+      findCardLocation(columns, activeCardId)?.card ??
+      null
+    : null;
 
-  function handleDragEnd(event: DragEndEvent) {
+  useEffect(() => {
+    setDragColumns(columns);
+  }, [columns]);
+
+  function handleDragStart(event: DragStartEvent) {
+    setActiveCardId(String(event.active.id));
+    setDragColumns(columns);
+  }
+
+  function handleDragOver(event: DragOverEvent) {
     const { active, over } = event;
+
     if (!over || active.id === over.id) {
       return;
     }
 
+    setDragColumns((current) =>
+      moveCardPreview(current, String(active.id), String(over.id))
+    );
+  }
+
+  function handleDragEnd(event: DragEndEvent) {
+    const { active, over } = event;
+    setActiveCardId(null);
+
+    if (!over || active.id === over.id) {
+      setDragColumns(columns);
+      return;
+    }
+
     const cardId = String(active.id);
-    const activeLocation = findCardLocation(columns, cardId);
-    if (!activeLocation) {
+    const finalColumns = moveCardPreview(dragColumns, cardId, String(over.id));
+    const originalLocation = findCardLocation(columns, cardId);
+    const finalLocation = findCardLocation(finalColumns, cardId);
+    setDragColumns(finalColumns);
+
+    if (!originalLocation || !finalLocation) {
       return;
     }
 
-    const overId = String(over.id);
-    let targetColumnId: string | null = null;
-    let targetIndex = 0;
-
-    if (overId.startsWith("column:")) {
-      targetColumnId = overId.slice("column:".length);
-      targetIndex = columns.find((column) => column.id === targetColumnId)?.cards.length ?? 0;
-    } else {
-      const overLocation = findCardLocation(columns, overId);
-      if (!overLocation) {
-        return;
-      }
-      targetColumnId = overLocation.column.id;
-      targetIndex = overLocation.index;
-    }
-
-    if (!targetColumnId) {
+    if (
+      originalLocation.column.id === finalLocation.column.id &&
+      originalLocation.index === finalLocation.index
+    ) {
       return;
     }
 
-    onMoveCard(cardId, targetColumnId, targetIndex);
+    onMoveCard(cardId, finalLocation.column.id, finalLocation.index);
+  }
+
+  function handleDragCancel() {
+    setActiveCardId(null);
+    setDragColumns(columns);
   }
 
   function submitColumn(event: FormEvent) {
@@ -518,15 +754,23 @@ function BoardCanvas({
   }
 
   return (
-    <DndContext sensors={sensors} collisionDetection={closestCorners} onDragEnd={handleDragEnd}>
+    <DndContext
+      sensors={sensors}
+      collisionDetection={closestCorners}
+      measuring={{ droppable: { strategy: MeasuringStrategy.Always } }}
+      onDragStart={handleDragStart}
+      onDragOver={handleDragOver}
+      onDragEnd={handleDragEnd}
+      onDragCancel={handleDragCancel}
+    >
       <div className="board-canvas">
-        {columns.map((column) => (
+        {dragColumns.map((column) => (
           <ColumnView
             key={column.id}
             column={column}
             selectedCardId={selectedCardId}
-            onSelectCard={onSelectCard}
-            onCreateCard={onCreateCard}
+            onOpenCard={onOpenCard}
+            onRequestCreateCard={onRequestCreateCard}
             onUpdateColumn={onUpdateColumn}
             onArchiveColumn={onArchiveColumn}
             onDuplicateCard={onDuplicateCard}
@@ -545,6 +789,9 @@ function BoardCanvas({
           </button>
         </form>
       </div>
+      <DragOverlay>
+        {activeCard ? <CardDragOverlay card={activeCard} /> : null}
+      </DragOverlay>
     </DndContext>
   );
 }
@@ -552,8 +799,8 @@ function BoardCanvas({
 function ColumnView({
   column,
   selectedCardId,
-  onSelectCard,
-  onCreateCard,
+  onOpenCard,
+  onRequestCreateCard,
   onUpdateColumn,
   onArchiveColumn,
   onDuplicateCard,
@@ -561,8 +808,8 @@ function ColumnView({
 }: {
   column: BoardColumn;
   selectedCardId: string | null;
-  onSelectCard: (cardId: string) => void;
-  onCreateCard: (columnId: string, title: string) => void;
+  onOpenCard: (cardId: string) => void;
+  onRequestCreateCard: (columnId: string) => void;
   onUpdateColumn: (columnId: string, patch: { name?: string; collapsed?: boolean }) => void;
   onArchiveColumn: (columnId: string) => void;
   onDuplicateCard: (cardId: string) => void;
@@ -601,11 +848,20 @@ function ColumnView({
         <button
           type="button"
           className="icon-button quiet"
+          onClick={() => onRequestCreateCard(column.id)}
+          aria-label={`Add card to ${column.name}`}
+          title="Add card"
+        >
+          <Plus size={16} />
+        </button>
+        <button
+          type="button"
+          className="icon-button quiet"
           onClick={() => onUpdateColumn(column.id, { collapsed: !column.collapsed })}
           aria-label={column.collapsed ? "Expand column" : "Collapse column"}
           title={column.collapsed ? "Expand column" : "Collapse column"}
         >
-          {column.collapsed ? <Plus size={16} /> : <X size={16} />}
+          {column.collapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
         </button>
         <button
           type="button"
@@ -627,14 +883,13 @@ function ColumnView({
                   key={card.id}
                   card={card}
                   selected={card.id === selectedCardId}
-                  onSelect={onSelectCard}
+                  onOpen={onOpenCard}
                   onDuplicate={onDuplicateCard}
                   onArchive={onArchiveCard}
                 />
               ))}
             </div>
           </SortableContext>
-          <QuickCardForm columnId={column.id} onCreateCard={onCreateCard} />
         </>
       )}
     </section>
@@ -644,23 +899,22 @@ function ColumnView({
 function CardTile({
   card,
   selected,
-  onSelect,
+  onOpen,
   onDuplicate,
   onArchive
 }: {
   card: Card;
   selected: boolean;
-  onSelect: (cardId: string) => void;
+  onOpen: (cardId: string) => void;
   onDuplicate: (cardId: string) => void;
   onArchive: (cardId: string) => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: card.id
   });
-  const checklistDone = card.checklist.filter((item) => item.isComplete).length;
   const style = {
     transform: CSS.Transform.toString(transform),
-    transition
+    transition: transition ?? "transform 180ms cubic-bezier(0.2, 0, 0, 1)"
   };
 
   return (
@@ -668,7 +922,21 @@ function CardTile({
       ref={setNodeRef}
       style={style}
       className={classNames("card-tile", selected && "selected", isDragging && "dragging")}
-      onClick={() => onSelect(card.id)}
+      role="button"
+      tabIndex={0}
+      title="Double-click to open"
+      aria-label={`Open ${card.title}`}
+      onClick={(event) => {
+        if (event.detail === 2) {
+          onOpen(card.id);
+        }
+      }}
+      onDoubleClick={() => onOpen(card.id)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          onOpen(card.id);
+        }
+      }}
     >
       <button
         type="button"
@@ -680,40 +948,7 @@ function CardTile({
       >
         <GripVertical size={16} />
       </button>
-      <div className="card-body">
-        <h3>{card.title}</h3>
-        {card.tags.length ? (
-          <div className="tag-row">
-            {card.tags.map((tag) => (
-              <span key={tag.id} className="tag-chip" style={{ borderColor: tag.color }}>
-                <span style={{ background: tag.color }} />
-                {tag.name}
-              </span>
-            ))}
-          </div>
-        ) : null}
-        <div className="card-meta">
-          {card.priority ? <span className={`priority ${card.priority.toLowerCase()}`}>{card.priority}</span> : null}
-          {card.dueDate ? (
-            <span>
-              <Calendar size={13} />
-              {formatDate(card.dueDate)}
-            </span>
-          ) : null}
-          {card.checklist.length ? (
-            <span>
-              <CheckCircle2 size={13} />
-              {checklistDone}/{card.checklist.length}
-            </span>
-          ) : null}
-          {card.comments.length ? (
-            <span>
-              <MessageSquare size={13} />
-              {card.comments.length}
-            </span>
-          ) : null}
-        </div>
-      </div>
+      <CardTileBody card={card} />
       <div className="card-actions">
         <button
           type="button"
@@ -744,58 +979,241 @@ function CardTile({
   );
 }
 
-function QuickCardForm({
-  columnId,
+function CardDragOverlay({ card }: { card: Card }) {
+  return (
+    <article className="card-tile drag-overlay-card">
+      <div className="drag-handle" aria-hidden="true">
+        <GripVertical size={16} />
+      </div>
+      <CardTileBody card={card} />
+    </article>
+  );
+}
+
+function CardTileBody({ card }: { card: Card }) {
+  const checklistDone = card.checklist.filter((item) => item.isComplete).length;
+
+  return (
+    <div className="card-body">
+      <h3>{card.title}</h3>
+      {card.tags.length ? (
+        <div className="tag-row">
+          {card.tags.map((tag) => (
+            <span key={tag.id} className="tag-chip" style={{ borderColor: tag.color }}>
+              <span style={{ background: tag.color }} />
+              {tag.name}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      <div className="card-meta">
+        {card.priority ? <span className={`priority ${card.priority.toLowerCase()}`}>{card.priority}</span> : null}
+        {card.dueDate ? (
+          <span>
+            <Calendar size={13} />
+            {formatDate(card.dueDate)}
+          </span>
+        ) : null}
+        {card.checklist.length ? (
+          <span>
+            <CheckCircle2 size={13} />
+            {checklistDone}/{card.checklist.length}
+          </span>
+        ) : null}
+        {card.observations.length ? (
+          <span>
+            <Link2 size={13} />
+            Obs {card.observations.length}
+          </span>
+        ) : null}
+        {card.comments.length ? (
+          <span>
+            <MessageSquare size={13} />
+            {card.comments.length}
+          </span>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function NewCardPanel({
+  column,
+  tags,
+  sourceObservation,
+  onClose,
   onCreateCard
 }: {
-  columnId: string;
-  onCreateCard: (columnId: string, title: string) => void;
+  column: BoardColumn;
+  tags: Tag[];
+  sourceObservation: Observation | null;
+  onClose: () => void;
+  onCreateCard: (input: CreateCardInput, tagIds: string[], observationId?: string) => void;
 }) {
+  const titleRef = useRef<HTMLInputElement>(null);
   const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [priority, setPriority] = useState<Priority>("");
+  const [dueDate, setDueDate] = useState("");
+  const [tagIds, setTagIds] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (sourceObservation) {
+      setTitle(observationTitle(sourceObservation.body));
+      setDescription(`Source observation:\n"${sourceObservation.body}"`);
+    }
+    titleRef.current?.focus();
+  }, [column.id, sourceObservation]);
 
   function submit(event: FormEvent) {
     event.preventDefault();
     if (!title.trim()) {
       return;
     }
-    onCreateCard(columnId, title);
-    setTitle("");
+    onCreateCard(
+      {
+        title,
+        description,
+        priority,
+        dueDate
+      },
+      tagIds,
+      sourceObservation?.id
+    );
+  }
+
+  function toggleTag(tagId: string) {
+    setTagIds((current) =>
+      current.includes(tagId)
+        ? current.filter((id) => id !== tagId)
+        : [...current, tagId]
+    );
   }
 
   return (
-    <form className="quick-card" onSubmit={submit}>
-      <input
-        value={title}
-        onChange={(event) => setTitle(event.target.value)}
-        placeholder="Add card"
-      />
-      <button type="submit" aria-label="Add card">
-        <Plus size={16} />
-      </button>
-    </form>
+    <aside className="detail-panel new-card-panel">
+      <header className="detail-header">
+        <div>
+          <p className="eyebrow">
+            New card in {column.name}
+            {sourceObservation ? " from observation" : ""}
+          </p>
+          <h2>Create card</h2>
+        </div>
+        <button type="button" className="icon-button" onClick={onClose} aria-label="Close create card">
+          <X size={18} />
+        </button>
+      </header>
+
+      <form onSubmit={submit}>
+        <label className="detail-section">
+          Title
+          <input
+            ref={titleRef}
+            value={title}
+            onChange={(event) => setTitle(event.target.value)}
+            placeholder="Card title"
+          />
+        </label>
+
+        {sourceObservation ? (
+          <section className="detail-section linked-source">
+            <div className="section-heading">
+              <h3>Source observation</h3>
+              <span>{sourceObservation.id.slice(0, 8)}</span>
+            </div>
+            <p>{sourceObservation.body}</p>
+          </section>
+        ) : null}
+
+        <div className="detail-section grid-two">
+          <label>
+            Priority
+            <select value={priority} onChange={(event) => setPriority(event.target.value as Priority)}>
+              {PRIORITIES.map((item) => (
+                <option key={item || "none"} value={item}>
+                  {item || "None"}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Due date
+            <input type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} />
+          </label>
+        </div>
+
+        <label className="detail-section">
+          Description
+          <textarea
+            value={description}
+            onChange={(event) => setDescription(event.target.value)}
+            rows={5}
+            placeholder="Add details, acceptance criteria, or context"
+          />
+        </label>
+
+        {tags.length ? (
+          <section className="detail-section">
+            <div className="section-heading">
+              <h3>Tags</h3>
+              <span>{tagIds.length} selected</span>
+            </div>
+            <div className="tag-picker">
+              {tags.map((tag) => (
+                <button
+                  type="button"
+                  key={tag.id}
+                  className={tagIds.includes(tag.id) ? "tag-toggle active" : "tag-toggle"}
+                  onClick={() => toggleTag(tag.id)}
+                >
+                  <span style={{ background: tag.color }} />
+                  {tag.name}
+                </button>
+              ))}
+            </div>
+          </section>
+        ) : null}
+
+        <footer className="modal-actions">
+          <button type="button" className="secondary-button" onClick={onClose}>
+            Cancel
+          </button>
+          <button type="submit" className="primary-button" disabled={!title.trim()}>
+            Create card
+          </button>
+        </footer>
+      </form>
+    </aside>
   );
 }
 
 function DetailPanel({
   card,
   tags,
+  observations,
   onClose,
   onUpdateCard,
   onCreateTag,
   onApplyTag,
   onRemoveTag,
+  onLinkObservation,
+  onUnlinkObservation,
   onAddChecklistItem,
   onUpdateChecklistItem,
   onDeleteChecklistItem,
   onAddComment
 }: {
-  card: Card | null;
+  card: Card;
   tags: Tag[];
+  observations: Observation[];
   onClose: () => void;
   onUpdateCard: (cardId: string, patch: { title?: string; description?: string; priority?: Priority; dueDate?: string }) => void;
   onCreateTag: (name: string, color: string) => void;
   onApplyTag: (cardId: string, tagId: string) => void;
   onRemoveTag: (cardId: string, tagId: string) => void;
+  onLinkObservation: (cardId: string, observationId: string) => void;
+  onUnlinkObservation: (cardId: string, observationId: string) => void;
   onAddChecklistItem: (cardId: string, text: string) => void;
   onUpdateChecklistItem: (itemId: string, patch: { text?: string; isComplete?: boolean }) => void;
   onDeleteChecklistItem: (itemId: string) => void;
@@ -807,6 +1225,7 @@ function DetailPanel({
   const [dueDate, setDueDate] = useState("");
   const [newTag, setNewTag] = useState("");
   const [newTagColor, setNewTagColor] = useState(TAG_COLORS[0]);
+  const [selectedObservationId, setSelectedObservationId] = useState("");
   const [newChecklistItem, setNewChecklistItem] = useState("");
   const [comment, setComment] = useState("");
 
@@ -815,24 +1234,15 @@ function DetailPanel({
     setDescription(card?.description ?? "");
     setPriority(card?.priority ?? "");
     setDueDate(card?.dueDate ?? "");
+    setSelectedObservationId("");
     setNewChecklistItem("");
     setComment("");
   }, [card?.id, card?.updatedAt]);
 
-  if (!card) {
-    return (
-      <aside className="detail-panel empty-detail">
-        <div>
-          <Tags size={28} />
-          <h2>No card selected</h2>
-          <p>Select a card to edit details, checklist items, tags, comments, and history.</p>
-        </div>
-      </aside>
-    );
-  }
-
   const activeCard = card;
   const appliedTagIds = new Set(activeCard.tags.map((tag) => tag.id));
+  const linkedObservationIds = new Set(activeCard.observations.map((observation) => observation.id));
+  const availableObservations = observations.filter((observation) => !linkedObservationIds.has(observation.id));
 
   function saveTitle() {
     if (title.trim() && title.trim() !== activeCard.title) {
@@ -864,6 +1274,15 @@ function DetailPanel({
     }
     onAddChecklistItem(activeCard.id, newChecklistItem);
     setNewChecklistItem("");
+  }
+
+  function submitObservationLink(event: FormEvent) {
+    event.preventDefault();
+    if (!selectedObservationId) {
+      return;
+    }
+    onLinkObservation(activeCard.id, selectedObservationId);
+    setSelectedObservationId("");
   }
 
   function submitComment(event: FormEvent) {
@@ -975,6 +1394,54 @@ function DetailPanel({
           </select>
           <button type="submit">Add</button>
         </form>
+      </section>
+
+      <section className="detail-section">
+        <div className="section-heading">
+          <h3>Linked observations</h3>
+          <span>{activeCard.observations.length}</span>
+        </div>
+        {activeCard.observations.length ? (
+          <div className="linked-observations">
+            {activeCard.observations.map((observation) => (
+              <article key={observation.id} className="linked-observation">
+                <p>{observation.body}</p>
+                <footer>
+                  <span>{observation.id.slice(0, 8)}</span>
+                  <button
+                    type="button"
+                    className="icon-button quiet"
+                    onClick={() => onUnlinkObservation(activeCard.id, observation.id)}
+                    aria-label="Unlink observation"
+                    title="Unlink observation"
+                  >
+                    <X size={15} />
+                  </button>
+                </footer>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <p className="empty-note">No observations linked yet.</p>
+        )}
+        {availableObservations.length ? (
+          <form className="inline-form" onSubmit={submitObservationLink}>
+            <select
+              value={selectedObservationId}
+              onChange={(event) => setSelectedObservationId(event.target.value)}
+            >
+              <option value="">Link observation...</option>
+              {availableObservations.map((observation) => (
+                <option key={observation.id} value={observation.id}>
+                  {observationTitle(observation.body)}
+                </option>
+              ))}
+            </select>
+            <button type="submit" disabled={!selectedObservationId}>
+              Link
+            </button>
+          </form>
+        ) : null}
       </section>
 
       <section className="detail-section">
@@ -1095,14 +1562,171 @@ function SettingsPanel({
   );
 }
 
+function ObservationsPanel({
+  observations,
+  onClose,
+  onCreateObservation,
+  onArchiveObservation,
+  onCreateCardFromObservation
+}: {
+  observations: Observation[];
+  onClose: () => void;
+  onCreateObservation: (body: string) => void;
+  onArchiveObservation: (observationId: string) => void;
+  onCreateCardFromObservation: (observation: Observation) => void;
+}) {
+  const [body, setBody] = useState("");
+
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    if (!body.trim()) {
+      return;
+    }
+    onCreateObservation(body);
+    setBody("");
+  }
+
+  return (
+    <aside className="detail-panel observations-panel">
+      <header className="detail-header">
+        <div>
+          <p className="eyebrow">Product notes</p>
+          <h2>Observations</h2>
+        </div>
+        <button type="button" className="icon-button" onClick={onClose} aria-label="Close observations">
+          <X size={18} />
+        </button>
+      </header>
+
+      <section className="detail-section observation-intro">
+        <p>
+          Capture raw observations one at a time. They can become bugs, feature requests, or user
+          stories later.
+        </p>
+        <form className="observation-form" onSubmit={submit}>
+          <textarea
+            value={body}
+            onChange={(event) => setBody(event.target.value)}
+            rows={4}
+            placeholder="Example: Dragging feels too abrupt when moving cards between columns."
+            autoFocus
+          />
+          <button type="submit">Add observation</button>
+        </form>
+      </section>
+
+      <section className="detail-section">
+        <div className="section-heading">
+          <h3>Captured</h3>
+          <span>{observations.length}</span>
+        </div>
+        {observations.length ? (
+          <div className="observation-list">
+            {observations.map((observation) => (
+              <article key={observation.id} className="observation-item">
+                <p>{observation.body}</p>
+                <div className="observation-meta">
+                  <span>{observation.source || "Project Board"}</span>
+                  {observation.projectPath ? <span>{observation.projectPath}</span> : null}
+                  <span>{observation.kind || "observation"}</span>
+                </div>
+                <footer>
+                  <time>{formatDateTime(observation.createdAt)}</time>
+                  <div className="observation-actions">
+                    <button
+                      type="button"
+                      className="secondary-button compact"
+                      onClick={() => onCreateCardFromObservation(observation)}
+                    >
+                      Create card
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-button quiet"
+                      onClick={() => onArchiveObservation(observation.id)}
+                      aria-label="Archive observation"
+                      title="Archive observation"
+                    >
+                      <Archive size={15} />
+                    </button>
+                  </div>
+                </footer>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <p className="empty-note">No observations yet.</p>
+        )}
+      </section>
+    </aside>
+  );
+}
+
 function findCardLocation(columns: BoardColumn[], cardId: string) {
   for (const column of columns) {
     const index = column.cards.findIndex((card) => card.id === cardId);
     if (index >= 0) {
-      return { column, index };
+      return { column, index, card: column.cards[index] };
     }
   }
   return null;
+}
+
+function moveCardPreview(columns: BoardColumn[], cardId: string, overId: string): BoardColumn[] {
+  if (cardId === overId) {
+    return columns;
+  }
+
+  const sourceLocation = findCardLocation(columns, cardId);
+  if (!sourceLocation) {
+    return columns;
+  }
+
+  let targetColumnId: string | null = null;
+  let targetIndex = 0;
+
+  if (overId.startsWith("column:")) {
+    targetColumnId = overId.slice("column:".length);
+    targetIndex = columns.find((column) => column.id === targetColumnId)?.cards.length ?? 0;
+  } else {
+    const targetLocation = findCardLocation(columns, overId);
+    if (!targetLocation) {
+      return columns;
+    }
+    targetColumnId = targetLocation.column.id;
+    targetIndex = targetLocation.index;
+  }
+
+  if (
+    !targetColumnId ||
+    (sourceLocation.column.id === targetColumnId && sourceLocation.index === targetIndex)
+  ) {
+    return columns;
+  }
+
+  const nextColumns = columns.map((column) => ({
+    ...column,
+    cards: [...column.cards]
+  }));
+  const sourceColumn = nextColumns.find((column) => column.id === sourceLocation.column.id);
+  const targetColumn = nextColumns.find((column) => column.id === targetColumnId);
+
+  if (!sourceColumn || !targetColumn) {
+    return columns;
+  }
+
+  const [movingCard] = sourceColumn.cards.splice(sourceLocation.index, 1);
+  if (!movingCard) {
+    return columns;
+  }
+
+  const safeTargetIndex = Math.max(0, Math.min(targetIndex, targetColumn.cards.length));
+  targetColumn.cards.splice(safeTargetIndex, 0, {
+    ...movingCard,
+    columnId: targetColumn.id
+  });
+
+  return nextColumns;
 }
 
 function matchesFilters(
@@ -1117,6 +1741,7 @@ function matchesFilters(
     card.title,
     card.description,
     ...card.tags.map((tag) => tag.name),
+    ...card.observations.map((observation) => observation.body),
     ...card.checklist.map((item) => item.text),
     ...card.comments.map((comment) => comment.body)
   ]
@@ -1171,6 +1796,14 @@ function formatDate(value: string): string {
   return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(
     new Date(`${value}T00:00:00`)
   );
+}
+
+function observationTitle(body: string): string {
+  const cleaned = body.trim().replace(/\s+/g, " ");
+  if (cleaned.length <= 72) {
+    return cleaned || "Observation";
+  }
+  return `${cleaned.slice(0, 69)}...`;
 }
 
 function formatDateTime(value: string): string {

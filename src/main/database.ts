@@ -13,7 +13,8 @@ export class LocalDatabase {
     private readonly db: Database,
     readonly dataDir: string,
     readonly dataPath: string,
-    readonly backupDir: string
+    readonly backupDir: string,
+    readonly agentInboxPath: string
   ) {}
 
   static async open(): Promise<LocalDatabase> {
@@ -21,6 +22,7 @@ export class LocalDatabase {
     const dataDir = path.join(localRoot, APP_DATA_FOLDER);
     const backupDir = path.join(dataDir, "backups", "manual");
     const dataPath = path.join(dataDir, "workspace.sqlite");
+    const agentInboxPath = path.join(dataDir, "agent-inbox.jsonl");
 
     await fs.mkdir(dataDir, { recursive: true });
     await fs.mkdir(path.join(dataDir, "attachments", "copied"), { recursive: true });
@@ -37,7 +39,7 @@ export class LocalDatabase {
       ? new SQL.Database(await fs.readFile(dataPath))
       : new SQL.Database();
 
-    const store = new LocalDatabase(db, dataDir, dataPath, backupDir);
+    const store = new LocalDatabase(db, dataDir, dataPath, backupDir, agentInboxPath);
     store.db.run("PRAGMA foreign_keys = ON");
     store.initializeSchema();
     store.ensureWorkspace();
@@ -189,6 +191,13 @@ export class LocalDatabase {
         PRIMARY KEY(card_id, tag_id)
       );
 
+      CREATE TABLE IF NOT EXISTS card_observations (
+        card_id TEXT NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
+        observation_id TEXT NOT NULL REFERENCES observations(id) ON DELETE CASCADE,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(card_id, observation_id)
+      );
+
       CREATE TABLE IF NOT EXISTS checklist_items (
         id TEXT PRIMARY KEY,
         card_id TEXT NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
@@ -246,6 +255,17 @@ export class LocalDatabase {
         updated_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS observations (
+        id TEXT PRIMARY KEY,
+        body TEXT NOT NULL,
+        source TEXT,
+        project_path TEXT,
+        kind TEXT NOT NULL DEFAULT 'observation',
+        archived_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
       CREATE INDEX IF NOT EXISTS idx_projects_workspace ON projects(workspace_id);
       CREATE INDEX IF NOT EXISTS idx_boards_project ON boards(project_id);
       CREATE INDEX IF NOT EXISTS idx_columns_board_position ON columns(board_id, position);
@@ -255,10 +275,22 @@ export class LocalDatabase {
       CREATE INDEX IF NOT EXISTS idx_cards_due_date ON cards(due_date);
       CREATE INDEX IF NOT EXISTS idx_tags_project_name ON tags(project_id, name);
       CREATE INDEX IF NOT EXISTS idx_card_tags_tag ON card_tags(tag_id);
+      CREATE INDEX IF NOT EXISTS idx_card_observations_observation ON card_observations(observation_id);
       CREATE INDEX IF NOT EXISTS idx_comments_card_created ON comments(card_id, created_at);
       CREATE INDEX IF NOT EXISTS idx_checklist_card_position ON checklist_items(card_id, position);
       CREATE INDEX IF NOT EXISTS idx_attachments_card ON attachments(card_id);
       CREATE INDEX IF NOT EXISTS idx_activity_project_created ON activity_events(project_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_observations_created ON observations(created_at);
     `);
+    this.ensureColumn("observations", "source", "source TEXT");
+    this.ensureColumn("observations", "project_path", "project_path TEXT");
+    this.ensureColumn("observations", "kind", "kind TEXT NOT NULL DEFAULT 'observation'");
+  }
+
+  private ensureColumn(table: string, column: string, definition: string): void {
+    const columns = this.all<{ name: string }>(`PRAGMA table_info(${table})`);
+    if (!columns.some((row) => row.name === column)) {
+      this.db.run(`ALTER TABLE ${table} ADD COLUMN ${definition}`);
+    }
   }
 }
